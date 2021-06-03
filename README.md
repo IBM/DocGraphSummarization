@@ -2,8 +2,8 @@
 # Table of Contents
 
 1.  [Current Project Focus](#org99f0697)
-        1.  [Application to CHRONOS](#org3fa77d7)
-        2.  [Why Query Focused Summarization?](#org97d77ff)
+    1.  [Application to CHRONOS](#org3fa77d7)
+    2.  [Why Query Focused Summarization?](#org97d77ff)
 2.  [Agenda](#org31ee18d)
 3.  [Current Approach](#orge04a449)
 4.  [Datasets](#orge923703)
