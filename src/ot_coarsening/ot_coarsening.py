@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.nn import Linear
 from torch_geometric.nn import DenseSAGEConv, DenseGCNConv, JumpingKnowledge
 from sinkhorn import sinkhorn_loss_default
+from pytorch_memlab import profile, set_target_gpu, profile_every
 
 class GNNBlock(torch.nn.Module): #2 layer GCN block
     def __init__(self, in_channels, hidden_channels, out_channels):
@@ -15,7 +16,7 @@ class GNNBlock(torch.nn.Module): #2 layer GCN block
 
         self.lin = torch.nn.Linear(hidden_channels + out_channels,
                                    out_channels)
-        # self.lin1 = torch.nn.Linear(hidden_channels, out_channels)
+        #self.lin1 = torch.nn.Linear(hidden_channels, out_channels)
 
     def reset_parameters(self):
         self.conv1.reset_parameters()
@@ -91,19 +92,19 @@ class Coarsening(torch.nn.Module):
         self.embed_block1 = DenseGCNConv(dataset.num_features, hidden)
         self.coarse_block1 = CoarsenBlock(hidden, ratio)
         self.embed_block2 = DenseGCNConv(hidden, dataset.num_features)
-
         self.jump = JumpingKnowledge(mode='cat')
 
-        self.lin1 = Linear(hidden + dataset.num_features, hidden)
-        self.lin2 = Linear(hidden, dataset.num_classes)
+        # self.lin1 = Linear(hidden + dataset.num_features, hidden)
+        # self.lin2 = Linear(hidden, dataset.num_classes)
 
     def reset_parameters(self):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
         self.jump.reset_parameters()
-        self.lin1.reset_parameters()
-        self.lin2.reset_parameters()
+        # self.lin1.reset_parameters()
+        # self.lin2.reset_parameters()
 
+#    @profile_every(1)
     def forward(self, data, epsilon=0.01, opt_epochs=100, p=2):
         x, adj, mask = data.x, data.adj, data.mask
         batch_num_nodes = data.mask.sum(-1)
@@ -113,7 +114,6 @@ class Coarsening(torch.nn.Module):
         xs = [coarse_x.mean(dim=1)]
         x2 = F.tanh(self.embed_block2(coarse_x, new_adj, mask, add_loop=True))
         xs.append(x2.mean(dim=1))
-
 
         opt_loss = 0.0
         for i in range(len(x)):
@@ -139,10 +139,8 @@ class Coarsening(torch.nn.Module):
         N = (M.sum(-1)>0).sum()
         return M[MM_ind[:N]]
 
-
     def __repr__(self):
         return self.__class__.__name__
-
 
 class MultiLayerCoarsening(torch.nn.Module):
     def __init__(self, dataset, hidden, num_layers=2, ratio=0.5):
@@ -156,8 +154,8 @@ class MultiLayerCoarsening(torch.nn.Module):
         self.num_layers = num_layers
 
         self.jump = JumpingKnowledge(mode='cat')
-        self.lin1 = Linear( hidden + dataset.num_features, hidden)
-        self.lin2 = Linear(hidden, dataset.num_classes)
+        # self.lin1 = Linear( hidden + dataset.num_features, hidden)
+        # self.lin2 = Linear(hidden, dataset.num_classes)
 
     def reset_parameters(self):
         self.embed_block1.reset_parameters()
@@ -165,16 +163,13 @@ class MultiLayerCoarsening(torch.nn.Module):
         self.embed_block2.reset_parameters()
 
         self.jump.reset_parameters()
-        self.lin1.reset_parameters()
-        self.lin2.reset_parameters()
+        # self.lin1.reset_parameters()
 
     def forward(self, data, epsilon=0.01, opt_epochs=100):
         x, adj, mask = data.x, data.adj, data.mask
         batch_num_nodes = data.mask.sum(-1)
-
         new_adjs = [adj]
         Ss = []
-
         x1 = F.relu(self.embed_block1(x, adj, mask, add_loop=True))
         xs = [x1.mean(dim=1)]
         new_adj = adj
@@ -198,6 +193,7 @@ class MultiLayerCoarsening(torch.nn.Module):
             if x4.size()[0]==0:
                 # opt_loss += sinkhorn_loss_default(x3, x2[i], epsilon, niter=opt_epochs).float()
                 continue
+            print("opt_loss")
             opt_loss += sinkhorn_loss_default(x3, x4, epsilon, niter=opt_epochs).float()
 
         return xs, new_adjs, Ss, opt_loss

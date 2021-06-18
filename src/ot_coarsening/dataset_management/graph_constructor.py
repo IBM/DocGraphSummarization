@@ -131,10 +131,10 @@ def compute_bert_word_embedding(bert_model, bert_tokenizer, sentences, unique_wo
     words_to_embeddings = {word: [] for word in unique_words}
     # tokenize the sentence (includes punctuation, before and after tokens, and subword tokens)
     # input_ids_batched = bert_tokenizer(sentences, padding=True)
-    start = time.time()
+    # start = time.time()
     output_embeddings, output_tokens = compute_embeddings(sentences, padding=True)
-    finish = time.time()
-    print("Compute embeddings {}".format(finish - start))
+    # finish = time.time()
+    # print("Compute embeddings {}".format(finish - start))
     # print(input_ids_batched)
     # input_ids_batched, tokens_batched = compute_tokenizations(sentences, padding=True)
     # produce embedding values for each token
@@ -204,10 +204,10 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
     def _get_mean_word_embeddings(self, text, tfidf, unique_words):
         words_to_embeddings = {word: [] for word in unique_words}
 	    # perform word_embeddinng on the batch
-        start = time.time()
+        # start = time.time()
         embedding_dicts = compute_bert_word_embedding(self.bert_model, self.bert_tokenizer, text, unique_words, self.word_embedding_size)
-        finish = time.time()
-        print("Compute bert word embedding time {}".format(finish - start))
+        # finish = time.time()
+        # print("Compute bert word embedding time {}".format(finish - start))
         for i, word_embeddings_dict in enumerate(embedding_dicts):
             tfidf_words = list(tfidf[str(i)].keys())
             # assuming we have a list of tokens and a list of word embeddings
@@ -251,8 +251,8 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
                 edge_attr.append(attribute)
                 edge_attr.append(attribute)
         # convert to numpy
-        edge_index = torch.LongTensor(edge_index)
-        edge_attr = torch.LongTensor(edge_attr)
+        edge_index = torch.LongTensor(edge_index).T
+        edge_attr = torch.LongTensor(edge_attr)[:, None]
 
         return edge_index, edge_attr
 
@@ -291,36 +291,39 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         #        }
         # }
         # Get each unique word in the document
-        start = time.time()
+        # start = time.time()
         unique_words = self._get_unique_words(tfidf)
-        end = time.time()
-        print("Get unique words time : {}".format(end - start))
+        # end = time.time()
+        # print("Get unique words time : {}".format(end - start))
         # Get a word embededing for each instance of a word (dictionary word:embedding)
-        start = time.time()
+        # start = time.time()
         word_embeddings = self._get_mean_word_embeddings(label["text"], tfidf, unique_words)
-        end = time.time()
-        print("Word embeddings time : {}".format(end - start))
+        # end = time.time()
+        # print("Word embeddings time : {}".format(end - start))
         # Make a list of sentence embeddings (num_sentences, embedding_size)
-        start = time.time()
+        # start = time.time()
         sentence_embeddings = compute_bert_sentence_embedding(label["text"], self.sentence_transformer)
-        end = time.time()
-        print("Sentence embeddings time : {}".format(end - start))
+        # end = time.time()
+        # print("Sentence embeddings time : {}".format(end - start))
         # Make node attributes
-        start = time.time()
+        # start = time.time()
         node_attributes, word_to_node_index, sentence_to_node_index = self._make_nodes(word_embeddings,
                                                                                        sentence_embeddings)
-        end = time.time()
-        print("Make nodes time : {}".format(end - start))
+        # end = time.time()
+        # print("Make nodes time : {}".format(end - start))
         # Make edges
-        start = time.time()
+        # start = time.time()
         edge_index, edge_attributes = self._make_edges(word_to_node_index,
                                                        sentence_to_node_index,
                                                        tfidf)
-        end = time.time()
-        print("Make edges time : {}".format(end - start))
+        # get labels
+        labels = torch.Tensor(label["label"])
+        # end = time.time()
+        # print("Make edges time : {}".format(end - start))
         # Make data and return
         data_object = Data(x=node_attributes,
                            edge_index=edge_index,
-                           edge_attr=edge_attributes)
+                           edge_attr=edge_attributes,
+                           y=labels)
 
         return data_object

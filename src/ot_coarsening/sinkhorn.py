@@ -1,6 +1,8 @@
 import torch
 from torch.autograd import Variable
 
+from pytorch_memlab import profile, set_target_gpu, profile_every
+
 def sinkhorn_normalized(x, y, epsilon, mu, nu, n, m, p, niter):
     """
     Computes the Sinkhorn divergence. It consists in substracting the transport
@@ -12,6 +14,7 @@ def sinkhorn_normalized(x, y, epsilon, mu, nu, n, m, p, niter):
     Wyy = sinkhorn_loss(y, y, epsilon, nu, nu, m, m, p, niter)
     return Wxy - 0.5 * Wxx - 0.5 * Wyy
 
+#@profile_every(1)
 def sinkhorn_loss_default(x, y, epsilon=0.01, p=2, niter=100, gpu=True):
     n = x.size()[0]
     m = y.size()[0]
@@ -26,7 +29,8 @@ def sinkhorn_norm_default(x, y, epsilon=0.01, p=2, niter=100):
     nu = torch.ones(m)/m
     return sinkhorn_normalized(x, y, epsilon, mu, nu, n, m, p, niter=niter)
 
-def sinkhorn_loss(x, y, epsilon, mu, nu, n, m, p=2, niter=100, acc=1e-3, unbalanced=False, gpu=False):
+#@profile_every(1)
+def sinkhorn_loss(x, y, epsilon, mu, nu, n, m, p=2, niter=100, acc=1e-3, unbalanced=False, gpu=True):
     """
     Given two emprical measures with n points each with locations x and y
     outputs an approximation of the OT cost with regularization parameter epsilon
@@ -53,10 +57,10 @@ def sinkhorn_loss(x, y, epsilon, mu, nu, n, m, p=2, niter=100, acc=1e-3, unbalan
     C= cost_matrix(x, y, p=p)
 
     # use GPU if asked to
-    # if (gpu & torch.cuda.is_available()):
-    #     C = C.cuda()
-    #     mu = nu.cuda()
-    #     nu = nu.cuda()
+    if (gpu & torch.cuda.is_available()):
+        C = C.cuda()
+        mu = mu.cuda()
+        nu = nu.cuda()
 
     # Parameters of the Sinkhorn algorithm.
     tau = -.8  # nesterov-like acceleration
@@ -97,7 +101,7 @@ def sinkhorn_loss(x, y, epsilon, mu, nu, n, m, p=2, niter=100, acc=1e-3, unbalan
         err = (u - u1).abs().sum()
 
         actual_nits += 1
-        if (err < thresh).data.numpy():
+        if (err < thresh).data.cpu().numpy():
             break
     U, V = u, v
     pi = torch.exp(M(U, V))  # Transport plan pi = diag(a)*K*diag(b)
