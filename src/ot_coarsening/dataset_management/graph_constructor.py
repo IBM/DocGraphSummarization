@@ -183,6 +183,19 @@ class GraphConstructor():
     def construct_graph(self):
         pass
 
+"""
+    Data wrapper class that contians the tfidf and label 
+    objects for a graph. 
+"""
+class CNNDailyMailData(Data):
+    
+    def __init__(self, x=None, edge_index=None, edge_attr=None, y=None,
+                 pos=None, normal=None, face=None, label=None, tfidf=None, **kwargs):
+        super().__init__(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y,
+                        pos=pos, normal=normal, face=face)
+        self.label = label
+        self.tfidf = tfidf
+
 class CNNDailyMailGraphConstructor(GraphConstructor):
 
     def __init__(self):
@@ -268,12 +281,12 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         # make sure word and sentence embeddings have the same shape
         assert np.shape(word_embedding_values)[-1] == np.shape(sentence_embeddings)[-1]
         # words are first then sentences
-        attribute_matrix = torch.cat((word_embedding_values, sentence_embeddings), dim=0)
+        attribute_matrix = torch.cat((sentence_embeddings, word_embedding_values), dim=0)
         # output is of shape (num_nodes, num_node_features)
-        # make word to node index map
-        word_to_node_index = {word_embedding_keys[i]: i for i in range(num_words)}
         # make sentence to index map
-        sentence_to_node_index = {str(i): i + len(word_embedding_keys) for i in range(num_sentences)}
+        sentence_to_node_index = {str(i): i for i in range(num_sentences)}
+        # make word to node index map
+        word_to_node_index = {word_embedding_keys[i]: i + num_sentences for i in range(num_words)}
 
         return attribute_matrix, word_to_node_index, sentence_to_node_index
 
@@ -318,12 +331,17 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
                                                        tfidf)
         # get labels
         labels = torch.Tensor(label["label"])
+        # filter invalid graphs
+        if len(label["text"]) < len(label["summary"]):
+            return None
         # end = time.time()
         # print("Make edges time : {}".format(end - start))
         # Make data and return
         data_object = Data(x=node_attributes,
                            edge_index=edge_index,
                            edge_attr=edge_attributes,
-                           y=labels)
+                           y=labels,
+                           label=label,
+                           tfidf=tfidf)
 
         return data_object

@@ -5,6 +5,7 @@ import torch_geometric.transforms as T
 import jsonlines
 import psutil
 import os
+import sys
 from tqdm import tqdm
 GRAPH_SUM = os.environ["GRAPH_SUM"]
 
@@ -37,13 +38,16 @@ def file_len(fname):
     - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
 """
 class CNNDailyMail(Dataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000):
-        self.root = os.path.join(GRAPH_SUM, "data/CNNDM")
+    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False):
+        self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
         self.proportion_of_dataset = proportion_of_dataset
         self.perform_processing = perform_processing
+        self.overwrite_existing = overwrite_existing
         self.max_number_of_nodes = max_number_of_nodes
+        self.max_summary_length = 10
+        self.num_sentence_nodes = None
         # self.data, self.slices = torch.load(self.processed_paths[0])
         super(CNNDailyMail, self).__init__(self.root, transform, pre_transform)
 
@@ -70,6 +74,10 @@ class CNNDailyMail(Dataset):
             ]
         else:
             raise Exception("Unrecognized mode: {}".format(self.mode))
+    
+    @property
+    def label_path(self):
+        return self.raw_file_names[1]
 
     @property
     def processed_file_names(self):
@@ -97,7 +105,7 @@ class CNNDailyMail(Dataset):
         return self.graph_constructor.construct_graph(tfidf, label)
 
     def len(self):
-        return len(os.listdir(os.path.join(self.root, "processed", self.mode)))
+        return int(len(os.listdir(os.path.join(self.root, "processed", self.mode))) * self.proportion_of_dataset)
 
     """
         Reads the given raw files into json data objects
@@ -109,19 +117,33 @@ class CNNDailyMail(Dataset):
         with jsonlines.open(os.path.join(self.root, tfidf_file)) as tfidf_reader:
             with jsonlines.open(os.path.join(self.root, label_file)) as label_reader:
                 for index, tfidf in enumerate(tqdm(tfidf_reader)):
-                    # check number of nodes
-                    label = label_reader.read()
-                    get_memory_usage()
-                    data = self._construct_graph(tfidf, label)
-                    number_of_nodes = data.x.shape[0] 
-                    if number_of_nodes > self.max_number_of_nodes:
-                        continue
-                    # save the data
-                    save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
-                    torch.save(data, save_path)
-                    current_index += 1
-                    if current_index > stopping_index:
-                        break
+                    try: 
+                        # read label
+                        label = label_reader.read()
+                        # check if file exists
+                        save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
+                        if not self.overwrite_existing and os.path.exists(save_path):
+                            current_index += 1
+                            continue
+                        # num sentences
+                        # check number of nodes
+                        # get_memory_usage()
+                        graph = self._construct_graph(tfidf, label)
+                        if graph is None:
+                            continue
+                        number_of_nodes = graph.x.shape[0] 
+                        if number_of_nodes > self.max_number_of_nodes:
+                            continue
+                        # save the data
+                        torch.save(graph, save_path)
+                        current_index += 1
+                        if current_index > stopping_index:
+                            break
+                    except Exception as e:
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                        print("Issue while constructing graph")
+                        print(exc_type, fname, exc_tb.tb_lineno)
 
     """
         Setup graph dataset preprocessing
@@ -163,14 +185,33 @@ class CNNDailyMail(Dataset):
     def num_node_features(self):
         return self.graph_constructor.word_embedding_size
 
+    def reshape_graph(self, example_graph):
+        example_graph.adj = example_graph.adj.unsqueeze(0)
+        num_nodes = example_graph.adj.shape[2]
+        example_graph.adj = torch.reshape(example_graph.adj, (1, num_nodes, -1))
+        example_graph.x = example_graph.x.unsqueeze(0)  
+        embedding_shape = example_graph.x.shape[2]
+        example_graph.x = torch.reshape(example_graph.x, (1, num_nodes, -1))
+        example_graph.y = example_graph.y.unsqueeze(0) 
+        example_graph.y = torch.reshape(example_graph.y, (1, -1))
+        example_graph.mask = example_graph.mask.unsqueeze(0)
+        example_graph.mask = torch.reshape(example_graph.mask, (1, -1))
+        return example_graph
+ 
+
     def get(self, idx):
         data_dir = os.path.join(self.root, "processed", self.mode)
         graph_data_path = os.path.join(data_dir, "data_{}.pt".format(idx))
-        data = torch.load(graph_data_path)
-        data = T.ToDense(self.max_number_of_nodes)(data)
-        data.adj = data.adj.squeeze().float()
-        # pad y
-        num_to_pad = 3 - data.y.shape[0]
-        data.y = F.pad(input=data.y, pad=(0, num_to_pad), mode='constant', value=-1)
-        data = data.to(device)
-        return data
+        # check if path exists
+        if not os.path.exists(graph_data_path):
+            return self.get((idx - 1) % self.len())
+        graph = torch.load(graph_data_path)
+        graph = T.ToDense(self.max_number_of_nodes)(graph)
+        graph.adj = graph.adj.squeeze().float()
+        num_to_pad = self.max_summary_length - graph.y.shape[0]
+        graph.y = F.pad(input=graph.y, pad=(0, num_to_pad), mode='constant', value=-1)
+        graph = graph.to(device)
+        graph = self.reshape_graph(graph)
+
+        return graph
+

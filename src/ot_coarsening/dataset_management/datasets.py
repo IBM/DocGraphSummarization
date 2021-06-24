@@ -4,7 +4,6 @@ from torch_geometric.utils import degree
 from cnn_daily_mail import CNNDailyMail
 import torch_geometric.transforms as T
 
-
 class NormalizedDegree(object):
     def __init__(self, mean, std):
         self.mean = mean
@@ -15,7 +14,6 @@ class NormalizedDegree(object):
         deg = (deg - self.mean) / self.std
         data.x = deg.view(-1, 1)
         return data
-
 
 def get_dataset(name, sparse=True, dirname=None):
     if name is "CNNDailyMail":
