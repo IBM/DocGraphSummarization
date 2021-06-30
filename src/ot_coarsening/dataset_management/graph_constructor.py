@@ -340,9 +340,11 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         # start = time.time()
         sentence_embeddings = compute_bert_sentence_embedding(label["text"], self.sentence_transformer)
         # Reduce embedding dimensionality
-        word_embeddings, sentence_embeddings = self._reduce_embedding_dimensionality(word_embeddings, 
-                                                                                    sentence_embeddings, 
-                                                                                    pretrained=True)
+        reduce_dimensionality = False
+        if reduce_dimensionality:
+            word_embeddings, sentence_embeddings = self._reduce_embedding_dimensionality(word_embeddings, 
+                                                                                        sentence_embeddings, 
+                                                                                        pretrained=True)
         # end = time.time()
         # print("Sentence embeddings time : {}".format(end - start))
         # Make node attributes

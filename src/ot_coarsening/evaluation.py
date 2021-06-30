@@ -10,6 +10,8 @@ from torch_geometric.data import DataLoader, Batch, Data
 import collections
 import wandb
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 def load_labels(dataset_path):
     """
         Assumes that the labels have the same structure as the 
@@ -95,6 +97,7 @@ def generate_predicted_summary(model, example_graph, example_label, output_node_
     model.eval()
     # run forward pass using model
     num_sentences = len(example_label["text"])
+    example_graph.to(device)
     example_graph = Batch.from_data_list([example_graph])
     #example_graph.x = example_graph.x.unsqueeze(0)  
     #example_graph.y = example_graph.y.unsqueeze(0) 

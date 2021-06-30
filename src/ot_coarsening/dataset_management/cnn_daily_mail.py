@@ -212,6 +212,5 @@ class CNNDailyMail(Dataset):
             graph = self.reshape_graph(graph)
         num_to_pad = self.max_summary_length - graph.y.shape[0]
         graph.y = F.pad(input=graph.y, pad=(0, num_to_pad), mode='constant', value=-1)
-        graph = graph.to(device)
         return graph
 

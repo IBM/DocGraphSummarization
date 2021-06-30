@@ -26,7 +26,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--batch_size', type=int, default=25)
+parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--lr_decay_factor', type=float, default=0.5)
 parser.add_argument('--lr_decay_step_size', type=int, default=50)
@@ -50,8 +50,9 @@ def num_graphs(data):
 
 def validation_test(model, dataset):
     print("Running validation")
+    model.eval()
     # make data loader
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)#, num_workers=4)
     # go through the validation set
     total_loss = 0
     for example_graph in tqdm(loader):
@@ -67,24 +68,26 @@ def validation_test(model, dataset):
 
 #@profile_every(1)
 def train_iteration(model, optimizer, loader):
-    print("iteration")
     model.train()
     total_loss = 0
     for graph_index, example_graph in enumerate(tqdm(loader)):
+        example_graph.to(device)
         #print_resident_tensors()
         #example_graph = reshape_batch(example_graph)
         optimizer.zero_grad()
-        example_graph = example_graph.to(device)
         # xs, new_adj, S, opt_loss = model(data, epsilon=0.01, opt_epochs=100)
-        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph)
-        print("opt loss")
-        print(opt_loss)
+        with torch.cuda.amp.autocast():
+            xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph)
+        #print("opt loss")
+        #print(opt_loss)
         if opt_loss == 0.0:
             continue
         opt_loss.backward()
         total_loss += opt_loss.item() * num_graphs(example_graph)
         optimizer.step()
 
+    # empty reserved memory
+    #torch.cuda.empty_cache()
     return total_loss / len(loader.dataset)
 
 def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_coarsening/model_cache"):
@@ -99,7 +102,7 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
     #train_index = perm[:train_id]
     #val_index = perm[train_id:]
     # print("num_layers, hidden", num_layers, hidden)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)#, num_workers=2)
     model.to(device).reset_parameters()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=0.0001) # adding a negative weight regularizaiton such that it cannot be zero.
 
@@ -110,7 +113,8 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
         # Do a training iteration
         train_loss = train_iteration(model, optimizer, train_loader)
         # Get the unsupervised validation loss
-        unsupervised_validation_loss = validation_test(model, validation_dataset)
+        #unsupervised_validation_loss = validation_test(model, validation_dataset)
+        unsupervised_validation_loss = 0.0
         # Get the Rouge train loss
         rouge_validation_loss = rouge_validation(model, validation_dataset)
         # Get the Rouge validation loss 
@@ -127,7 +131,7 @@ def rouge_validation(model, dataset):
 
 def init_model(dataset):
     num_layers = 1
-    num_hiddens = 128
+    num_hiddens = 64
     model = Coarsening(dataset, num_hiddens, ratio=args.ratio, epsilon=args.eps, opt_epochs=args.opt_iters)
     # model = MultiLayerCoarsening(dataset, num_hiddens, ratio=args.ratio)
     
@@ -169,4 +173,6 @@ def main():
     train(model, train_dataset, validation_dataset)
 
 if __name__ == "__main__":
+    #torch.multiprocessing.set_start_method('spawn')# good solution !!!!("iteration")
+    torch.backends.cudnn.benchmark = True
     main()
