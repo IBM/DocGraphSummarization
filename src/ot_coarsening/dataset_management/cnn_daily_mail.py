@@ -197,21 +197,21 @@ class CNNDailyMail(Dataset):
         example_graph.mask = example_graph.mask.unsqueeze(0)
         example_graph.mask = torch.reshape(example_graph.mask, (1, -1))
         return example_graph
- 
 
-    def get(self, idx):
+    def get(self, idx, dense=False):
         data_dir = os.path.join(self.root, "processed", self.mode)
         graph_data_path = os.path.join(data_dir, "data_{}.pt".format(idx))
         # check if path exists
         if not os.path.exists(graph_data_path):
             return self.get((idx - 1) % self.len())
         graph = torch.load(graph_data_path)
-        graph = T.ToDense(self.max_number_of_nodes)(graph)
-        graph.adj = graph.adj.squeeze().float()
+
+        if dense:
+            graph = T.ToDense(self.max_number_of_nodes)(graph)
+            graph.adj = graph.adj.squeeze().float()
+            graph = self.reshape_graph(graph)
         num_to_pad = self.max_summary_length - graph.y.shape[0]
         graph.y = F.pad(input=graph.y, pad=(0, num_to_pad), mode='constant', value=-1)
         graph = graph.to(device)
-        graph = self.reshape_graph(graph)
-
         return graph
 

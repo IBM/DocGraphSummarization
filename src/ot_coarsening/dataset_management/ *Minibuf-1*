@@ -1,9 +1,0 @@
-8    Write file: ~/Workspace/GraphSummarization/src/ot_coarsening/dataset_management/
-./
-../
-__pycache__/
-__init__.py
-cnn_daily_mail.py
-cnn_daily_mail_test.py
-datasets.py
-graph_constructor.py

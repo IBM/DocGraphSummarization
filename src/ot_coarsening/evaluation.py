@@ -6,7 +6,7 @@ import os
 import numpy as np
 from tqdm import tqdm
 import torch
-from torch_geometric.data import Batch, Data
+from torch_geometric.data import DataLoader, Batch, Data
 import collections
 import wandb
 
@@ -96,12 +96,12 @@ def generate_predicted_summary(model, example_graph, example_label, output_node_
     # run forward pass using model
     num_sentences = len(example_label["text"])
     example_graph = Batch.from_data_list([example_graph])
-    example_graph.x = example_graph.x.unsqueeze(0)  
-    example_graph.y = example_graph.y.unsqueeze(0) 
-    example_graph.mask = example_graph.mask.unsqueeze(0)
-    example_graph.adj = example_graph.adj.unsqueeze(0)
+    #example_graph.x = example_graph.x.unsqueeze(0)  
+    #example_graph.y = example_graph.y.unsqueeze(0) 
+    #example_graph.mask = example_graph.mask.unsqueeze(0)
+    #example_graph.adj = example_graph.adj.unsqueeze(0)
     output_node_counts = torch.Tensor([output_node_count])
-    _, _, _, _, coarse_indices = model.forward(example_graph, output_node_counts=output_node_counts, num_sentences=num_sentences) 
+    _, _, _, _, _, coarse_indices = model.forward(example_graph, output_node_counts=output_node_counts, num_sentences=[num_sentences]) 
     # should be a 1D tensor of indices
     coarse_indices = coarse_indices[0]
     predicted_summary = get_coarse_sentences(example_label, coarse_indices, num_sentences, output_node_count)
@@ -124,6 +124,7 @@ def perform_rouge_evaluations(model, dataset, serialize=True):
     # go though each example in the dataset
     predicted_summaries = []
     true_summaries = []
+    
     for example_index in range(len(dataset)):
         # get the example graph
         example_graph = dataset[example_index]

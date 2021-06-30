@@ -27,9 +27,9 @@ def main():
     mode = "val"
     proportion_of_dataset = 0.10
     dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
-    #mode = "train"
-    #proportion_of_dataset = 0.10
-    #dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
+    mode = "train"
+    proportion_of_dataset = 0.01
+    dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
 
 if __name__ == "__main__":
     main()

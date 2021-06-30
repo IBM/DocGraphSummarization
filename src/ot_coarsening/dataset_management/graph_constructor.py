@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import torch
 import numpy as np
+import os
 import time
 from transformers import BertTokenizerFast, BertModel, DistilBertTokenizerFast, DistilBertModel
 from sentence_transformers import SentenceTransformer
@@ -260,13 +261,16 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
                 edge_index.append(direction_one)
                 edge_index.append(direction_two)
                 # add the corresponding attribute
+                print("tfidf dict")
+                print(tfidf_dict)
+                print(word)
+                print("is word in dict: {}".format(word in tfidf_dict))
                 attribute = tfidf_dict[word]
                 edge_attr.append(attribute)
                 edge_attr.append(attribute)
         # convert to numpy
         edge_index = torch.LongTensor(edge_index).T
-        edge_attr = torch.LongTensor(edge_attr)[:, None]
-
+        edge_attr = torch.FloatTensor(edge_attr).unsqueeze(-1)
         return edge_index, edge_attr
 
     """
@@ -289,6 +293,25 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         word_to_node_index = {word_embedding_keys[i]: i + num_sentences for i in range(num_words)}
 
         return attribute_matrix, word_to_node_index, sentence_to_node_index
+
+    """
+        Reduces the dimensionality of the word and sentence embeddings using
+        a basic dimensionality reduction technique like PCA, pretrianed on a subset 
+        of the data.
+    """
+    def _reduce_embedding_dimensionality(self, word_embeddings, sentence_embeddings, pretrained=True):
+        if not pretrained:
+            raise Exception("I have not implemented the non-pretrained embedding system")
+        # path to a serialized dimensionality reducer object
+        pretrained_path = os.path.join(os.environ["GRAPH_SUM"], "src/ot_coarsening/model_cache", "dimensionality_reducer.pt")
+        # load up the dimensionality reducer
+        dimensionality_reducer = torch.load(pretrained_path)
+        # apply the reducer on word embeddings
+        new_word_embeddings = dimensionality_reducer.reduce_word_embeddings(word_embeddings)
+        # apply the reducer on sentence embeddings
+        new_sentence_embeddings = dimensionality_reducer.reduce_sentence_embeddings(sentence_embeddings)
+
+        return new_word_embeddings, new_sentence_embeddings
 
     def construct_graph(self, tfidf, label):
         # label has the shape
@@ -316,6 +339,10 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         # Make a list of sentence embeddings (num_sentences, embedding_size)
         # start = time.time()
         sentence_embeddings = compute_bert_sentence_embedding(label["text"], self.sentence_transformer)
+        # Reduce embedding dimensionality
+        word_embeddings, sentence_embeddings = self._reduce_embedding_dimensionality(word_embeddings, 
+                                                                                    sentence_embeddings, 
+                                                                                    pretrained=True)
         # end = time.time()
         # print("Sentence embeddings time : {}".format(end - start))
         # Make node attributes
@@ -332,7 +359,8 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         # get labels
         labels = torch.Tensor(label["label"])
         # filter invalid graphs
-        if len(label["text"]) < len(label["summary"]):
+        print(label)
+        if len(label["text"]) < len(label["label"]):
             return None
         # end = time.time()
         # print("Make edges time : {}".format(end - start))
