@@ -1,7 +1,7 @@
 import torch
 from torch.autograd import Variable
 
-from pytorch_memlab import profile, set_target_gpu, profile_every
+#from pytorch_memlab import profile, set_target_gpu, profile_every
 
 def sinkhorn_normalized(x, y, epsilon, mu, nu, n, m, p, niter):
     """

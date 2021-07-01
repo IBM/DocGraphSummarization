@@ -28,19 +28,6 @@ def load_labels(dataset_path):
     # return the data
     return dataset_list
 
-def average_rouge(rouge_list):
-    rouge_types = list(rouge_list[0].keys())
-    sub_scores = list(rouge_list[0][rouge_types[0]].keys())
-    length_of_rouge_list = len(rouge_list)
-    average_rouge_dict = {rouge_type : {} for rouge_type in rouge_types}
-    for rouge_type in rouge_types:
-        for sub_score in sub_scores:
-            total = sum(rouge_dict[rouge_type][sub_score] for rouge_dict in rouge_list)
-            average = total / length_of_rouge_list
-            average_rouge_dict[rouge_type][sub_score] = average
-
-    return average_rouge_dict
-
 def log_rouge_dictionary(rouge_dictionary):
 
     def flatten(d, parent_key='', sep='_'):
@@ -57,19 +44,19 @@ def log_rouge_dictionary(rouge_dictionary):
     wandb.log(flattened)
 
 def compute_rouge(predicted_summaries, true_summaries):
-    """
-        Performs a single set of rouge evaluations
-    """
-    rouge = Rouge()
-    rouge_scores = []
-    for index in range(len(predicted_summaries)):
-        predicted_summary = predicted_summaries[index]
-        true_summary = true_summaries[index]
-        rouge_score = rouge.get_scores(predicted_summary, true_summary, avg=True)
-        rouge_scores.append(rouge_score)    
-    average_rouge_scores = average_rouge(rouge_scores)
-        
-    return average_rouge_scores
+    rouge = Rouge() 
+    hyps = []
+    refs = []
+    for i in range(len(predicted_summaries)):
+        predicted_summary = predicted_summaries[i]
+        true_summary = true_summaries[i]
+        hyp = "\n".join(predicted_summary)
+        ref = "\n".join(true_summary)
+        hyps.append(hyp)
+        refs.append(ref)
+    
+    score = rouge.get_scores(hyps, refs, avg=True)
+    return score
 
 def get_coarse_sentences(example_label, coarse_indices, num_sentences, output_node_count):
     """
@@ -152,3 +139,7 @@ def perform_rouge_evaluations(model, dataset, serialize=True):
 
     return rouge_dictionary
 
+
+if __name__ == "__main__":
+    # run valuation on a saved model
+    pass

@@ -4,10 +4,14 @@ from torch_geometric.data import InMemoryDataset, Dataset, Data
 import torch_geometric.transforms as T
 import jsonlines
 import psutil
+import traceback
 import os
 import sys
 from tqdm import tqdm
 GRAPH_SUM = os.environ["GRAPH_SUM"]
+import sys
+sys.path.append(GRAPH_SUM)
+from src.ot_coarsening.dataset_management.dimensionality_reduction import PCADimensionalityReducer
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -38,10 +42,16 @@ def file_len(fname):
     - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
 """
 class CNNDailyMail(Dataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False):
+    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=True):
         self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
+        self.dimensionality = 768
+        self.reduce_dimensionality = reduce_dimensionality
+        if self.reduce_dimensionality:
+            self.dimensionality_reducer = PCADimensionalityReducer()
+            self.dimensionality_reducer.load()
+            self.dimensionality = self.dimensionality_reducer.reduced_size
         self.proportion_of_dataset = proportion_of_dataset
         self.perform_processing = perform_processing
         self.overwrite_existing = overwrite_existing
@@ -144,6 +154,8 @@ class CNNDailyMail(Dataset):
                         fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
                         print("Issue while constructing graph")
                         print(exc_type, fname, exc_tb.tb_lineno)
+                        print(str(e))
+                        print(traceback.format_exc())
 
     """
         Setup graph dataset preprocessing
@@ -198,6 +210,24 @@ class CNNDailyMail(Dataset):
         example_graph.mask = torch.reshape(example_graph.mask, (1, -1))
         return example_graph
 
+    """
+        Reduces the dimensionality of the word and sentence embeddings using
+        a basic dimensionality reduction technique like PCA, pretrianed on a subset 
+        of the data.
+    """
+    def _reduce_embedding_dimensionality(self, graph, pretrained=True):
+        if not pretrained:
+            raise Exception("I have not implemented the non-pretrained embedding system")
+        # get num sentences
+        num_sentences = len(graph.label["text"])
+        # unpack word and sentence embeddings
+        embeddings = graph.x
+        # apply the reducer on word embeddings
+        new_x = self.dimensionality_reducer.reduce(embeddings, device=device)
+        # alter the graph word and sentence embeddings
+        graph.x = new_x
+        return graph
+    
     def get(self, idx, dense=False):
         data_dir = os.path.join(self.root, "processed", self.mode)
         graph_data_path = os.path.join(data_dir, "data_{}.pt".format(idx))
@@ -210,6 +240,9 @@ class CNNDailyMail(Dataset):
             graph = T.ToDense(self.max_number_of_nodes)(graph)
             graph.adj = graph.adj.squeeze().float()
             graph = self.reshape_graph(graph)
+        # Reduce embedding dimensionality
+        if self.reduce_dimensionality:
+            graph = self._reduce_embedding_dimensionality(graph, pretrained=True)
         num_to_pad = self.max_summary_length - graph.y.shape[0]
         graph.y = F.pad(input=graph.y, pad=(0, num_to_pad), mode='constant', value=-1)
         return graph

@@ -15,7 +15,7 @@ from torch.optim import Adam
 import warnings
 warnings.filterwarnings("ignore")
 # setup arguments
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = 'cpu' #torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 """
     Main function for processing the dataset
@@ -25,10 +25,10 @@ def main():
     graph_constructor = CNNDailyMailGraphConstructor()
     # Setup CNNDailyMail data
     #mode = "val"
-    #proportion_of_dataset = 0.10
+    #proportion_of_dataset = 0.20
     #dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
     mode = "train"
-    proportion_of_dataset = 0.10
+    proportion_of_dataset = 0.20
     dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
 
 if __name__ == "__main__":

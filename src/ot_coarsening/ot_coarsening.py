@@ -8,8 +8,9 @@ import torch_geometric.transforms as T
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import DenseSAGEConv, DenseGCNConv, JumpingKnowledge, GCNConv
 from sinkhorn import sinkhorn_loss_default
-from pytorch_memlab import profile, set_target_gpu, profile_every
+#from pytorch_memlab import profile, set_target_gpu, profile_every
 import numpy as np
+import time
 
 class CoarsenBlock(torch.nn.Module):
     def __init__(self, in_channels, assign_ratio, max_number_of_nodes=1000):
@@ -163,9 +164,9 @@ class CoarsenBlock(torch.nn.Module):
             current_alpha_vec = alpha_vec[j]
             # run forward pass for this single graph
             sparse_graph, S, topk_ind = self.single_graph_forward(current_alpha_vec,
-                                                                     current_graph, 
-                                                                     output_node_count=output_node_count, 
-                                                                     num_sentences=current_num_sentences)
+                                                                  current_graph, 
+                                                                  output_node_count=output_node_count, 
+                                                                  num_sentences=current_num_sentences)
             # add to lists
             Ss.append(S)
             sparse_graphs.append(sparse_graph)
@@ -175,17 +176,18 @@ class CoarsenBlock(torch.nn.Module):
         return sparse_batch, Ss, batch_topk_ind
 
 class Coarsening(torch.nn.Module):
-    def __init__(self, dataset, hidden, ratio=0.5, epsilon=1.0, opt_epochs=10, embedding_compression=True): # we only use 1 layer for coarsening
+    def __init__(self, dataset, hidden, ratio=0.5, epsilon=1.0, opt_epochs=10, embedding_compression=False): # we only use 1 layer for coarsening
         super(Coarsening, self).__init__()
         self.ratio = ratio
         self.epsilon = epsilon
         self.opt_epochs = opt_epochs
         self.embedding_compression = embedding_compression
-        self.compressed_dimensionality = dataset.num_features // 5
-        self.compression = Linear(dataset.num_features, self.compressed_dimensionality)
-        self.embed_block1 = GCNConv(self.compressed_dimensionality, hidden)
+        #self.compressed_dimensionality = dataset.num_features // 5
+        #self.compression = Linear(dataset.num_features, self.compressed_dimensionality)
+        self.embed_block1 = GCNConv(dataset.dimensionality, hidden)
         self.coarse_block1 = CoarsenBlock(hidden, ratio)
-        self.embed_block2 = GCNConv(hidden, self.compressed_dimensionality)
+        self.embed_block2 = GCNConv(hidden, dataset.dimensionality)
+        #self.uncompress = Linear(self.compressed_dimensionality, dataset.num_features)
 
     def reset_parameters(self):
         self.embed_block1.reset_parameters()
@@ -218,6 +220,7 @@ class Coarsening(torch.nn.Module):
 
     #@profile_every(1)
     def forward(self, data, p=2, output_node_counts=None, num_sentences=None):
+        data_copy = self.batch_copy(data)
         x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
         batch_num_nodes = x.shape[0]
         # convert edge_attr to edge_weight
@@ -228,23 +231,25 @@ class Coarsening(torch.nn.Module):
         if self.embedding_compression:
             compressed_embeddings = self.compression(x)
             x = F.relu(compressed_embeddings)
-        data.x = x
-        data_copy = self.batch_copy(data)
         x1 = self.embed_block1(x, edge_index, edge_weight)
         x1 = F.relu(x1)
         # make batched data object
-        data1 = data
-        data1.x = x1
+        data.x = x1
         # convert the data to dense for this phase
-        coarse_batch, S, batch_topk_ind = self.coarse_block1(data1,
-                                                                  num_sentences=num_sentences,
-                                                                  output_node_counts=output_node_counts)
+        coarse_batch, S, batch_topk_ind = self.coarse_block1(data,
+                                                             num_sentences=num_sentences,
+                                                             output_node_counts=output_node_counts)
+
         coarse_x = coarse_batch.x
         xs = [coarse_x.mean(dim=1)]
         coarse_edge_index = coarse_batch.edge_index
         coarse_edge_attr = coarse_batch.edge_attr
         coarse_edge_weight = coarse_edge_attr.squeeze().float()
         x2 = F.tanh(self.embed_block2(coarse_x, coarse_edge_index, coarse_edge_weight))
+        # uncompress
+        if self.embedding_compression:
+            uncompressed_embeddings = self.uncompress(x2)
+            x2 = F.relu(uncompressed_embeddings)
         coarse_batch.x = x2
         xs.append(x2.mean(dim=1))
         opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p)

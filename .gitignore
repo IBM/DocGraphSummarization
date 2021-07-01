@@ -3,4 +3,7 @@
 *.log
 tmp/
 data/
+*.pyc
+*.swp
+src/ot_coarsening/model_cache/
 
