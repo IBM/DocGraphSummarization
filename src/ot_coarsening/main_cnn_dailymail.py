@@ -18,6 +18,7 @@ from torch_geometric.data import DataListLoader, DataLoader, DenseDataLoader as 
 from torch_geometric.nn import DataParallel
 from torch.optim import Adam
 from pytorch_memlab import profile, set_target_gpu, profile_every, LineProfiler
+import torch.autograd.profiler as profiler
 import warnings
 warnings.filterwarnings("ignore")
 # setup arguments
@@ -25,13 +26,13 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--batch_size', type=int, default=200)
+parser.add_argument('--batch_size', type=int, default=5)
 parser.add_argument('--lr', type=float, default=0.001)
-parser.add_argument('--lr_decay_factor', type=float, default=0.5)
+parser.add_argument('--lr_decay_factor', type=float, default=1.0)
 parser.add_argument('--lr_decay_step_size', type=int, default=50)
 parser.add_argument('--opt_iters', type=int, default=10)
 parser.add_argument('--eps', type=float, default=1.0)
-parser.add_argument('--ratio', type=float, default=0.5)
+parser.add_argument('--ratio', type=float, default=0.1)
 parser.add_argument('--train', action='store_true')
 parser.add_argument('--no_extra_mlp', action='store_true')
 
@@ -73,12 +74,14 @@ def train_iteration(model, optimizer, loader):
         #example_graph = reshape_batch(example_graph)
         optimizer.zero_grad()
         # xs, new_adj, S, opt_loss = model(data, epsilon=0.01, opt_epochs=100)
+        #with profiler.profile(with_stack=True, profile_memory=True) as prof:
         xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph)
         if opt_loss == 0.0:
             continue
         opt_loss.backward()
         total_loss += opt_loss.item() * num_graphs(example_graph)
         optimizer.step()
+    #print(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total'))
 
     # empty reserved memory
     #torch.cuda.empty_cache()
@@ -122,7 +125,7 @@ def rouge_validation(model, dataset):
 
 def init_model(dataset):
     num_layers = 1
-    num_hiddens = 64
+    num_hiddens = 1
     model = Coarsening(dataset, num_hiddens, ratio=args.ratio, epsilon=args.eps, opt_epochs=args.opt_iters)
     # model = MultiLayerCoarsening(dataset, num_hiddens, ratio=args.ratio)
     return model
@@ -155,9 +158,10 @@ def main():
     # Setup logging
     run_name = setup_logging()
     # Setup CNNDailyMail data
-    graph_constructor = CNNDailyMailGraphConstructor()
-    train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=0.02)
-    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False)
+    #graph_constructor = CNNDailyMailGraphConstructor()
+    graph_constructor = None
+    train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=1.0)
+    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=0.001)
     # Initialize the model
     model = init_model(train_dataset)
     # Run training

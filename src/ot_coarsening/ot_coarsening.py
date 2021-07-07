@@ -54,7 +54,7 @@ class CoarsenBlock(torch.nn.Module):
         # compute attention
         alpha_vec = self.gcn_att(x, edge_index, edge_weight)
         alpha_vec = torch.pow(alpha_vec, 2)
-        alpha_vec = F.sigmoid(alpha_vec).squeeze() # b*n*1 --> b*n
+        alpha_vec = torch.sigmoid(alpha_vec).squeeze() # b*n*1 --> b*n
         # reshape alpha_vec
         output_alpha_vecs = []
         index = 0
@@ -125,7 +125,7 @@ class CoarsenBlock(torch.nn.Module):
             temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec, output_node_count, num_sentences)
             cut_value = temptopk[-1]
         # calculate S
-        cut_alpha_vec = F.relu(alpha_vec + 0.0000001 - cut_value)
+        cut_alpha_vec = torch.relu(alpha_vec + 0.0000001 - cut_value)
         repeated_cut_alpha_vec = cut_alpha_vec.repeat(cut_alpha_vec.shape[0], 1)
         S = norm_adj * repeated_cut_alpha_vec
         S = F.normalize(S, p=1, dim=-1)
@@ -176,7 +176,7 @@ class CoarsenBlock(torch.nn.Module):
         return sparse_batch, Ss, batch_topk_ind
 
 class Coarsening(torch.nn.Module):
-    def __init__(self, dataset, hidden, ratio=0.5, epsilon=1.0, opt_epochs=10, embedding_compression=False): # we only use 1 layer for coarsening
+    def __init__(self, dataset, hidden, ratio=0.1, epsilon=0.01, opt_epochs=100, embedding_compression=False): # we only use 1 layer for coarsening
         super(Coarsening, self).__init__()
         self.ratio = ratio
         self.epsilon = epsilon
@@ -230,9 +230,9 @@ class Coarsening(torch.nn.Module):
         # compress embedding
         if self.embedding_compression:
             compressed_embeddings = self.compression(x)
-            x = F.relu(compressed_embeddings)
+            x = torch.relu(compressed_embeddings)
         x1 = self.embed_block1(x, edge_index, edge_weight)
-        x1 = F.relu(x1)
+        x1 = torch.relu(x1)
         # make batched data object
         data.x = x1
         # convert the data to dense for this phase
@@ -245,11 +245,11 @@ class Coarsening(torch.nn.Module):
         coarse_edge_index = coarse_batch.edge_index
         coarse_edge_attr = coarse_batch.edge_attr
         coarse_edge_weight = coarse_edge_attr.squeeze().float()
-        x2 = F.tanh(self.embed_block2(coarse_x, coarse_edge_index, coarse_edge_weight))
+        x2 = torch.tanh(self.embed_block2(coarse_x, coarse_edge_index, coarse_edge_weight))
         # uncompress
         if self.embedding_compression:
             uncompressed_embeddings = self.uncompress(x2)
-            x2 = F.relu(uncompressed_embeddings)
+            x2 = torch.relu(uncompressed_embeddings)
         coarse_batch.x = x2
         xs.append(x2.mean(dim=1))
         opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p)
@@ -258,12 +258,11 @@ class Coarsening(torch.nn.Module):
 
     def get_nonzero_rows(self, M):
         # M is a matrix
-        #row_ind = M.sum(-1).nonzero().squeeze() #nonzero has bugs in Pytorch 1.2.0.........
-        #return row_ind
+        return M[M.sum(-1).nonzero().squeeze()] #nonzero has bugs in Pytorch 1.2.0.........
         #So we use other methods to take place of it
-        MM, MM_ind = M.sum(-1).sort()
-        N = (M.sum(-1)>0).sum()
-        return M[MM_ind[:N]]
+        #MM, MM_ind = M.sum(-1).sort()
+        #N = (M.sum(-1)>0).sum()
+        #return M[MM_ind[:N]]
 
     def __repr__(self):
         return self.__class__.__name__
@@ -342,7 +341,7 @@ class MultiLayerCoarsening(torch.nn.Module):
         batch_topks = []
         new_adjs = [adj]
         Ss = []
-        x1 = F.relu(self.embed_block1(x, adj, mask, add_loop=True))
+        x1 = torch.relu(self.embed_block1(x, adj, mask, add_loop=True))
         xs = [x1.mean(dim=1)]
         new_adj = adj
         coarse_x = x1

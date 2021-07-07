@@ -54,11 +54,16 @@ def sinkhorn_loss(x, y, epsilon, mu, nu, n, m, p=2, niter=100, acc=1e-3, unbalan
     """
     # The Sinkhorn algorithm takes as input three variables :
     # C = Variable(cost_matrix(x, y, p=p), requires_grad=True)  # Wasserstein cost function
-    C= cost_matrix(x, y, p=p)
-
     # use GPU if asked to
-    if (gpu & torch.cuda.is_available()):
-        C = C.cuda()
+    if not gpu:
+        x = x.cpu()
+        y = y.cpu()
+        mu = mu.cpu() 
+        nu = nu.cpu()
+
+    C = cost_matrix(x, y, p=p)
+
+    if (gpu and torch.cuda.is_available()):
         mu = mu.cuda()
         nu = nu.cuda()
 
@@ -106,7 +111,6 @@ def sinkhorn_loss(x, y, epsilon, mu, nu, n, m, p=2, niter=100, acc=1e-3, unbalan
     U, V = u, v
     pi = torch.exp(M(U, V))  # Transport plan pi = diag(a)*K*diag(b)
     cost = torch.sum(pi * C)  # Sinkhorn cost
-
     return cost
 
 def cost_matrix(x, y, p=2):

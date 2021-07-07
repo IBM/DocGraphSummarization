@@ -15,34 +15,11 @@ from src.ot_coarsening.dataset_management.dimensionality_reduction import PCADim
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def get_memory_usage():
-    # gives a single float value
-    psutil.cpu_percent()
-    # gives an object with many fields
-    psutil.virtual_memory()
-    # you can convert that object to a dictionary 
-    dict(psutil.virtual_memory()._asdict())
-    # you can have the percentage of used RAM
-    percentage = psutil.virtual_memory().percent
-    # print("Virtual memory percentage {}".format(percentage))
-
-def file_len(fname):
-    with open(fname) as f:
-        for i, l in enumerate(f):
-            pass
-    return i + 1
-
 """
-    CNNDailyMail Dataset
-    - It is in memory because the dataset is fairly small
-    - I referenced this page https://pytorch-geometric.readthedocs.io/en/latest/notes/create_dataset.html
-    - The data that I used for this class was preprocessed by the HeterSumGraph people
-    - The data is located at GraphSummarization/data/CNNDM
-    - For future datasets I will need to do the TF-IDF preprocessing and such on my own
-    - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
+    DUC Dataset
 """
-class CNNDailyMail(Dataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=False):
+class DUC(Dataset):
+    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=True):
         self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
@@ -59,7 +36,7 @@ class CNNDailyMail(Dataset):
         self.max_summary_length = 10
         self.num_sentence_nodes = None
         # self.data, self.slices = torch.load(self.processed_paths[0])
-        super(CNNDailyMail, self).__init__(self.root, transform, pre_transform)
+        super(DUC, self).__init__(self.root, transform, pre_transform)
 
     @property
     def raw_file_names(self):
@@ -235,7 +212,6 @@ class CNNDailyMail(Dataset):
         if not os.path.exists(graph_data_path):
             return self.get((idx - 1) % self.len())
         graph = torch.load(graph_data_path)
-        graph = graph.to(device)
 
         if dense:
             graph = T.ToDense(self.max_number_of_nodes)(graph)

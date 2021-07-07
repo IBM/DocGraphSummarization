@@ -3,13 +3,17 @@ import torch
 import numpy as np
 import os
 import time
-from transformers import BertTokenizerFast, BertModel, DistilBertTokenizerFast, DistilBertModel
+from transformers import BertTokenizerFast, BertModel, DistilBertTokenizerFast, DistilBertModel, LongformerModel 
 from sentence_transformers import SentenceTransformer
 from torch_geometric.data import Data
 from transformers import logging as hf_logging
+import nltk
+nltk.download('stopwords')
+from nltk.corpus import stopwords
 hf_logging.set_verbosity_error()
 
 device = torch.device('cpu') #torch.device("cuda" if torch.cuda.is_available() else 'cpu')
+stop_words = stopwords.words('english') 
 
 def compute_bert_tokenization(tokenizer, sentence, padding=True):
     assert isinstance(sentence, str)
@@ -93,7 +97,7 @@ def convert_to_average_duplicates(embeddings, tokens):
 
     - sentence
 """
-def compute_bert_word_embedding(bert_model, bert_tokenizer, sentences, unique_words, word_embedding_size):
+def compute_bert_word_embedding(bert_model, bert_tokenizer, sentences, unique_words, word_embedding_size, longform_embedding):
 
     """
        Produces tokenizations for the list of sentences in text
@@ -129,11 +133,17 @@ def compute_bert_word_embedding(bert_model, bert_tokenizer, sentences, unique_wo
             output_tokens.append(tokens)
         return output_embeddings, output_tokens
 
+    def compute_longform_embeddings(sentences, padding=True):
+        pass
+
     words_to_embeddings = {word: [] for word in unique_words}
     # tokenize the sentence (includes punctuation, before and after tokens, and subword tokens)
     # input_ids_batched = bert_tokenizer(sentences, padding=True)
     # start = time.time()
-    output_embeddings, output_tokens = compute_embeddings(sentences, padding=True)
+    if longform_embedding:
+        output_embeddings, output_tokens = compute_longform_embeddings(sentences, padding=True)
+    else:
+        output_embeddings, output_tokens = compute_embeddings(sentences, padding=True)
     # finish = time.time()
     # print("Compute embeddings {}".format(finish - start))
     # print(input_ids_batched)
@@ -176,22 +186,8 @@ def compute_bert_sentence_embedding(sentences, model):
 class GraphConstructor():
 
     def __init__(self):
+        self.longform_embedding = False
         pass
-
-    """
-        This is the core important function from this class
-    """
-    def construct_graph(self):
-        pass
-
-class CNNDailyMailGraphConstructor(GraphConstructor):
-
-    def __init__(self):
-        self.bert_model = DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
-        self.bert_tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
-        # self.sentence_transformer =  SentenceTransformer('paraphrase-mpnet-base-v2')
-        self.sentence_transformer = SentenceTransformer('paraphrase-distilroberta-base-v1')
-        self.word_embedding_size = self.bert_model.config.hidden_size
 
     def _get_unique_words(self, tfidf):
         unique_words = set()
@@ -202,18 +198,23 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
 
         return list(unique_words)
 
+    def _filter_stop_words(self, unique_words):
+        # go through each unique word and filter the stop words
+        filtered_words = [word for word in unique_words if not word in stop_words]
+        return filtered_words
+
     def _get_mean_word_embeddings(self, text, tfidf, unique_words):
         words_to_embeddings = {word: [] for word in unique_words}
 	    # perform word_embeddinng on the batch
         # start = time.time()
-        embedding_dicts = compute_bert_word_embedding(self.bert_model, self.bert_tokenizer, text, unique_words, self.word_embedding_size)
+        embedding_dicts = compute_bert_word_embedding(self.bert_model, self.bert_tokenizer, text, unique_words, self.word_embedding_size, self.longform_embedding)
         # finish = time.time()
         # print("Compute bert word embedding time {}".format(finish - start))
         for i, word_embeddings_dict in enumerate(embedding_dicts):
             tfidf_words = list(tfidf[str(i)].keys())
             # assuming we have a list of tokens and a list of word embeddings
             for j, token in enumerate(tfidf_words):
-                if token in word_embeddings_dict:
+                if token in word_embeddings_dict and token in words_to_embeddings:
                     word_embedding = word_embeddings_dict[token]
                     words_to_embeddings[token].append(word_embedding)
         # mean each list
@@ -228,7 +229,7 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
 
         return mean_embeddings
 
-    def _make_edges(self, word_to_node_index, sentence_to_node_index,  tfidf):
+    def _make_edges(self, word_to_node_index, sentence_to_node_index,  tfidf, filtered_words):
         # edge_attr is the tfidf features
         edge_attr = []
         # edge_index is of shape (2, num_edges) in COO format
@@ -240,6 +241,8 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
             tfidf_dict = tfidf[sentence_index]
             sentence_words = tfidf_dict.keys()
             for word in sentence_words:
+                if not word in filtered_words:
+                    continue
                 # make an edge connecting the word to the current sentence
                 word_node_index = word_to_node_index[word]
                 # make two sided edge
@@ -248,10 +251,6 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
                 edge_index.append(direction_one)
                 edge_index.append(direction_two)
                 # add the corresponding attribute
-                print("tfidf dict")
-                print(tfidf_dict)
-                print(word)
-                print("is word in dict: {}".format(word in tfidf_dict))
                 attribute = tfidf_dict[word]
                 edge_attr.append(attribute)
                 edge_attr.append(attribute)
@@ -271,7 +270,7 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         num_sentences = np.shape(sentence_embeddings)[0]
         # make sure word and sentence embeddings have the same shape
         assert np.shape(word_embedding_values)[-1] == np.shape(sentence_embeddings)[-1]
-        # words are first then sentences
+        # sentences are first then words
         attribute_matrix = torch.cat((sentence_embeddings, word_embedding_values), dim=0)
         # output is of shape (num_nodes, num_node_features)
         # make sentence to index map
@@ -281,8 +280,23 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
 
         return attribute_matrix, word_to_node_index, sentence_to_node_index
 
+    def _check_word_exists(self, tfidf, label):
+        assert len(tfidf.keys()) == len(label["text"])
+        for sentence_index in range(len(label["text"])):
+            sentence = label["text"][sentence_index]
+            tfidf_sentence = tfidf[str(sentence_index)]
+            for word in tfidf_sentence:
+                word_exists = False
+                if word in sentence:
+                    word_exists = True
+                    break
+                if not word_exists:
+                    print(word)
+                assert word_exists
 
     def construct_graph(self, tfidf, label):
+        # sanity check
+        self._check_word_exists(tfidf, label)
         # label has the shape
         # {
         #    "text": [],
@@ -298,11 +312,13 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         # Get each unique word in the document
         # start = time.time()
         unique_words = self._get_unique_words(tfidf)
+        # Filter stop words
+        filtered_unique_words = self._filter_stop_words(unique_words)
         # end = time.time()
         # print("Get unique words time : {}".format(end - start))
         # Get a word embededing for each instance of a word (dictionary word:embedding)
         # start = time.time()
-        word_embeddings = self._get_mean_word_embeddings(label["text"], tfidf, unique_words)
+        word_embeddings = self._get_mean_word_embeddings(label["text"], tfidf, filtered_unique_words)
         # end = time.time()
         # print("Word embeddings time : {}".format(end - start))
         # Make a list of sentence embeddings (num_sentences, embedding_size)
@@ -320,11 +336,11 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
         # start = time.time()
         edge_index, edge_attributes = self._make_edges(word_to_node_index,
                                                        sentence_to_node_index,
-                                                       tfidf)
+                                                       tfidf,
+                                                       filtered_unique_words)
         # get labels
         labels = torch.Tensor(label["label"])
         # filter invalid graphs
-        print(label)
         if len(label["text"]) < len(label["label"]):
             return None
         # end = time.time()
@@ -338,3 +354,18 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
                            tfidf=tfidf)
 
         return data_object
+
+class CNNDailyMailGraphConstructor(GraphConstructor):
+
+    def __init__(self):
+        self.bert_model = DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
+        self.bert_tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+        # self.sentence_transformer =  SentenceTransformer('paraphrase-mpnet-base-v2')
+        self.sentence_transformer = SentenceTransformer('paraphrase-distilroberta-base-v1')
+        self.word_embedding_size = self.bert_model.config.hidden_size
+        self.longform_embedding = False
+
+class DUCGraphConstructor(GraphConstructor):
+
+    def __init__(self):
+        pass
