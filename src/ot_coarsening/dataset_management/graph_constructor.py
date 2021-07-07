@@ -310,30 +310,17 @@ class GraphConstructor():
         #        }
         # }
         # Get each unique word in the document
-        # start = time.time()
         unique_words = self._get_unique_words(tfidf)
         # Filter stop words
         filtered_unique_words = self._filter_stop_words(unique_words)
-        # end = time.time()
-        # print("Get unique words time : {}".format(end - start))
         # Get a word embededing for each instance of a word (dictionary word:embedding)
-        # start = time.time()
         word_embeddings = self._get_mean_word_embeddings(label["text"], tfidf, filtered_unique_words)
-        # end = time.time()
-        # print("Word embeddings time : {}".format(end - start))
         # Make a list of sentence embeddings (num_sentences, embedding_size)
-        # start = time.time()
         sentence_embeddings = compute_bert_sentence_embedding(label["text"], self.sentence_transformer)
-        # end = time.time()
-        # print("Sentence embeddings time : {}".format(end - start))
         # Make node attributes
-        # start = time.time()
         node_attributes, word_to_node_index, sentence_to_node_index = self._make_nodes(word_embeddings,
                                                                                        sentence_embeddings)
-        # end = time.time()
-        # print("Make nodes time : {}".format(end - start))
         # Make edges
-        # start = time.time()
         edge_index, edge_attributes = self._make_edges(word_to_node_index,
                                                        sentence_to_node_index,
                                                        tfidf,
@@ -343,15 +330,14 @@ class GraphConstructor():
         # filter invalid graphs
         if len(label["text"]) < len(label["label"]):
             return None
-        # end = time.time()
-        # print("Make edges time : {}".format(end - start))
         # Make data and return
         data_object = Data(x=node_attributes,
                            edge_index=edge_index,
                            edge_attr=edge_attributes,
                            y=labels,
                            label=label,
-                           tfidf=tfidf)
+                           tfidf=tfidf,
+                           num_sentences=len(label["text"]))
 
         return data_object
 

@@ -26,7 +26,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--batch_size', type=int, default=5)
+parser.add_argument('--batch_size', type=int, default=20)
 parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--lr_decay_factor', type=float, default=1.0)
 parser.add_argument('--lr_decay_step_size', type=int, default=50)
@@ -56,7 +56,8 @@ def validation_test(model, dataset):
     for example_graph in tqdm(loader):
         #example_graph = reshape_batch(example_graph)
         example_graph.to(device)
-        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph)
+        num_sentences = example_graph.num_sentences
+        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph, num_sentences=num_sentences)
         if opt_loss == 0.0:
             continue
         total_loss += opt_loss.item() * num_graphs(example_graph)
@@ -75,7 +76,8 @@ def train_iteration(model, optimizer, loader):
         optimizer.zero_grad()
         # xs, new_adj, S, opt_loss = model(data, epsilon=0.01, opt_epochs=100)
         #with profiler.profile(with_stack=True, profile_memory=True) as prof:
-        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph)
+        num_sentences = example_graph.num_sentences
+        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph, num_sentences=num_sentences)
         if opt_loss == 0.0:
             continue
         opt_loss.backward()
@@ -123,11 +125,16 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
 def rouge_validation(model, dataset):
     rouge_evaluations = evaluation.perform_rouge_evaluations(model, dataset)
 
-def init_model(dataset):
+def init_model(dataset, model_type="ot_coarsening"):
     num_layers = 1
     num_hiddens = 1
-    model = Coarsening(dataset, num_hiddens, ratio=args.ratio, epsilon=args.eps, opt_epochs=args.opt_iters)
-    # model = MultiLayerCoarsening(dataset, num_hiddens, ratio=args.ratio)
+    if model_type == "ot_coarsening":
+        model = Coarsening(dataset, num_hiddens, ratio=args.ratio, epsilon=args.eps, opt_epochs=args.opt_iters)
+    elif model_type == "u_net":
+        pass
+    elif model_type == "multilayer_ot_coarsening":
+        model = MultiLayerCoarsening(dataset, num_hiddens, ratio=args.ratio)
+    
     return model
 
 def setup_logging():
@@ -143,14 +150,6 @@ def setup_logging():
     # 4. Return the run name
     return wandb.run.name 
  
-def print_resident_tensors():
-    for obj in gc.get_objects():
-        try:
-            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
-                print(type(obj), obj.size())
-        except:
-            pass 
-
 """
     Main function for performing OTCoarsening on a DailyMail graph
 """
@@ -161,7 +160,7 @@ def main():
     #graph_constructor = CNNDailyMailGraphConstructor()
     graph_constructor = None
     train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=1.0)
-    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=0.001)
+    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=1.0)
     # Initialize the model
     model = init_model(train_dataset)
     # Run training

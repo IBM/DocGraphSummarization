@@ -191,7 +191,6 @@ def get_cluster_topic(dataset_root_path, dataset_name, cluster_name):
         if len(topic.find("granularity")) > 0:
             topic_json["granularity"] = topic.find("granularity").get_text().strip()
 
-
     return topic_json
 
 """

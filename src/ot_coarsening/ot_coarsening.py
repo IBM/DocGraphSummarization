@@ -193,13 +193,14 @@ class Coarsening(torch.nn.Module):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
 
-    def compute_loss(self, data, coarse_data, epsilon, opt_epochs, p):
+    def compute_loss(self, data, coarse_data, epsilon, opt_epochs, p, num_sentences):
         opt_loss = 0.0
         data_list = data.to_data_list()
         coarse_list = coarse_data.to_data_list()
         for i in range(data.num_graphs):
-            x = data_list[i].x
-            x2 = coarse_list[i].x
+            num_sentences_current = num_sentences[i]
+            x = data_list[i].x[0: num_sentences_current]
+            x2 = coarse_list[i].x[0: num_sentences_current]
             x3 = self.get_nonzero_rows(x)
             opt_loss += sinkhorn_loss_default(x3, x2, epsilon, niter=opt_epochs, p=p)
 
@@ -252,7 +253,7 @@ class Coarsening(torch.nn.Module):
             x2 = torch.relu(uncompressed_embeddings)
         coarse_batch.x = x2
         xs.append(x2.mean(dim=1))
-        opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p)
+        opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p, num_sentences)
 
         return xs, edge_index, edge_attr, S, opt_loss, batch_topk_ind
 

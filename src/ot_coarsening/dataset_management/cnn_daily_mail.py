@@ -41,7 +41,7 @@ def file_len(fname):
     - For future datasets I will need to do the TF-IDF preprocessing and such on my own
     - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
 """
-class CNNDailyMail(Dataset):
+class CNNDailyMail(InMemoryDataset):
     def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=False):
         self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"

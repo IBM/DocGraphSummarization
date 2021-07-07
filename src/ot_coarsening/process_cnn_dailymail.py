@@ -25,10 +25,10 @@ def main():
     graph_constructor = CNNDailyMailGraphConstructor()
     # Setup CNNDailyMail data
     mode = "train"
-    proportion_of_dataset = 0.01
-    #dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
+    proportion_of_dataset = 0.1
+    dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
     mode = "val"
-    proportion_of_dataset = 0.01
+    proportion_of_dataset = 0.1
     dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=proportion_of_dataset)
 
 if __name__ == "__main__":
