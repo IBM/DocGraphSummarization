@@ -22,18 +22,18 @@ class CoarsenBlock(torch.nn.Module):
     def reset_parameters(self):
         self.gcn_att.reset_parameters()
 
-    def get_topk_range_for_sentences(self, alpha_vec, output_node_count, num_sentences):
-        assert num_sentences >= output_node_count
+    def get_topk_range_for_sentences(self, alpha_vec, num_output_sentences, num_sentences):
+        assert num_sentences >= num_output_sentences
         alpha_vec = alpha_vec.detach().cpu().numpy()
         full_argsort = np.argsort(alpha_vec)[::-1]
         topk_ind = [] 
-        num_sentences = 0
+        num_sentences_saved = 0
         for index in full_argsort:
-            if num_sentences == output_node_count:
+            if num_sentences_saved == num_output_sentences:
                 break
             is_sentence = index < num_sentences 
             if is_sentence:
-                num_sentences += 1
+                num_sentences_saved += 1
             topk_ind.append(index)
         
         temptopk = torch.Tensor(alpha_vec[topk_ind])
@@ -101,11 +101,12 @@ class CoarsenBlock(torch.nn.Module):
         return graph
     
     #@profile_every(1)    
-    def single_graph_forward(self, alpha_vec, graph, output_node_count=None, num_sentences=None):
+    def single_graph_forward(self, alpha_vec, graph, num_output_sentences=3):
         """
             Performs forward pass for a single graph
         """
         # convert the graph to dense
+        num_sentences = graph.num_sentences.item()
         dense_graph = self.convert_sparse_to_dense(graph)
         adj = dense_graph.adj.squeeze().float()
         x = dense_graph.x
@@ -115,15 +116,9 @@ class CoarsenBlock(torch.nn.Module):
         norm_adj = self.normalize_batch_adj(adj.unsqueeze(0)).squeeze()
         # get topk
         cut_value = 0
-        if num_sentences is None:
-            # This is in the train phase
-            num_coarse_nodes = int(num_nodes * self.assign_ratio) + 1
-            temptopk, topk_ind = alpha_vec.topk(num_coarse_nodes, dim=-1)
-            cut_value = temptopk[-1]
-        else:
-            # This is in the evaluation phase
-            temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec, output_node_count, num_sentences)
-            cut_value = temptopk[-1]
+        # This is in the evaluation phase
+        temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec, num_output_sentences, num_sentences)
+        cut_value = temptopk[-1]
         # calculate S
         cut_alpha_vec = torch.relu(alpha_vec + 0.0000001 - cut_value)
         repeated_cut_alpha_vec = cut_alpha_vec.repeat(cut_alpha_vec.shape[0], 1)
@@ -141,7 +136,7 @@ class CoarsenBlock(torch.nn.Module):
 
         return sparse_graph, S, topk_ind
 
-    def forward(self, data, num_sentences=None, output_node_counts=None):
+    def forward(self, data, num_output_sentences=3):
         # compute attention scores
         alpha_vec = self.calculate_attention(data)
         # convert batch to list
@@ -153,20 +148,13 @@ class CoarsenBlock(torch.nn.Module):
         Ss = []
         for j in range(batch_size):
             # prepare data for individual forward pass
-            if output_node_counts is None:
-                output_node_count = None
-                current_num_sentences = None
-            else:
-                output_node_count = output_node_counts[j].int().item()
-                current_num_sentences = num_sentences[j]
             current_graph = graph_list[j]
             # prepare alpha vec 
             current_alpha_vec = alpha_vec[j]
             # run forward pass for this single graph
             sparse_graph, S, topk_ind = self.single_graph_forward(current_alpha_vec,
                                                                   current_graph, 
-                                                                  output_node_count=output_node_count, 
-                                                                  num_sentences=current_num_sentences)
+                                                                  num_output_sentences=num_output_sentences)
             # add to lists
             Ss.append(S)
             sparse_graphs.append(sparse_graph)
@@ -193,7 +181,8 @@ class Coarsening(torch.nn.Module):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
 
-    def compute_loss(self, data, coarse_data, epsilon, opt_epochs, p, num_sentences):
+    def compute_loss(self, data, coarse_data, epsilon, opt_epochs, p):
+        num_sentences = data.num_sentences
         opt_loss = 0.0
         data_list = data.to_data_list()
         coarse_list = coarse_data.to_data_list()
@@ -220,7 +209,7 @@ class Coarsening(torch.nn.Module):
         return new_batch
 
     #@profile_every(1)
-    def forward(self, data, p=2, output_node_counts=None, num_sentences=None):
+    def forward(self, data, p=2, num_output_sentences=3):
         data_copy = self.batch_copy(data)
         x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
         batch_num_nodes = x.shape[0]
@@ -238,8 +227,7 @@ class Coarsening(torch.nn.Module):
         data.x = x1
         # convert the data to dense for this phase
         coarse_batch, S, batch_topk_ind = self.coarse_block1(data,
-                                                             num_sentences=num_sentences,
-                                                             output_node_counts=output_node_counts)
+                                                             num_output_sentences=num_output_sentences)
 
         coarse_x = coarse_batch.x
         xs = [coarse_x.mean(dim=1)]
@@ -253,7 +241,7 @@ class Coarsening(torch.nn.Module):
             x2 = torch.relu(uncompressed_embeddings)
         coarse_batch.x = x2
         xs.append(x2.mean(dim=1))
-        opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p, num_sentences)
+        opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p)
 
         return xs, edge_index, edge_attr, S, opt_loss, batch_topk_ind
 

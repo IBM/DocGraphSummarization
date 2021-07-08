@@ -42,11 +42,12 @@ def file_len(fname):
     - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
 """
 class CNNDailyMail(InMemoryDataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=False):
+    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, reduce_dimensionality=False, dense=False):
         self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
         self.dimensionality = 768
+        self.dense = dense
         self.num_output_sentences = 3
         self.reduce_dimensionality = reduce_dimensionality
         if self.reduce_dimensionality:
@@ -55,7 +56,6 @@ class CNNDailyMail(InMemoryDataset):
             self.dimensionality = self.dimensionality_reducer.reduced_size
         self.proportion_of_dataset = proportion_of_dataset
         self.perform_processing = perform_processing
-        self.overwrite_existing = overwrite_existing
         self.max_number_of_nodes = max_number_of_nodes
         self.max_summary_length = 10
         self.num_sentence_nodes = None
@@ -133,7 +133,7 @@ class CNNDailyMail(InMemoryDataset):
                         label = label_reader.read()
                         # check if file exists
                         save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
-                        if not self.overwrite_existing and os.path.exists(save_path):
+                        if not self.perform_processing and os.path.exists(save_path):
                             current_index += 1
                             continue
                         # num sentences
@@ -229,7 +229,7 @@ class CNNDailyMail(InMemoryDataset):
         graph.x = new_x
         return graph
     
-    def get(self, idx, dense=True):
+    def get(self, idx):
         data_dir = os.path.join(self.root, "processed", self.mode)
         graph_data_path = os.path.join(data_dir, "data_{}.pt".format(idx))
         # check if path exists
@@ -238,7 +238,7 @@ class CNNDailyMail(InMemoryDataset):
         graph = torch.load(graph_data_path)
         graph = graph.to(device)
 
-        if dense:
+        if self.dense:
             graph = T.ToDense(self.max_number_of_nodes)(graph)
             graph.adj = graph.adj.squeeze().float()
             graph = self.reshape_graph(graph)

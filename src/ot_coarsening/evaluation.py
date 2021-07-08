@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import sys
 sys.path.append(os.environ["GRAPH_SUM"])
 from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
-from src.ot_coarsening.dataset_management.cnn_daily_mail import CNNDailyMail
+from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
 import collections
 import wandb
 
@@ -80,7 +80,7 @@ def get_coarse_sentences(ground_truth, coarse_indices):
     coarse_sentences = [text[sentence_index] for sentence_index in sentence_indices]
     return coarse_sentences, sentence_indices
 
-def generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences):
+def generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences, dense=False):
     """
         Generates a textual summmary of the example_graph using
         the given model.
@@ -95,7 +95,10 @@ def generate_predicted_summary(model, example_graph, ground_truth, num_output_se
     #example_graph.y = example_graph.y.unsqueeze(0) 
     #example_graph.mask = example_graph.mask.unsqueeze(0)
     #example_graph.adj = example_graph.adj.unsqueeze(0)
-    _, _, _, _, coarse_indices = model.forward(example_graph) 
+    if dense:
+        _, _, _, _, coarse_indices = model(example_graph, num_output_sentences=num_output_sentences)
+    else:
+        _, _, _, _, _, coarse_indices = model(example_graph, num_output_sentences = num_output_sentences)
     # should be a 1D tensor of indices
     coarse_indices = coarse_indices[0]
     predicted_summary, sentence_indices = get_coarse_sentences(ground_truth, coarse_indices)
@@ -117,7 +120,7 @@ def save_histogram(saved_sentence_inds, file_path):
     plt.show()
     plt.savefig(file_path)
             
-def perform_rouge_evaluations(model, dataset, serialize=True, log=True):
+def perform_rouge_evaluations(model, dataset, serialize=True, log=True, num_output_sentences=3, dense=False):
     """
         Perform rouge-1, rouge-2, and rouge-l evaluation given a
         trained OTCoarsening model on the given evaluation dataset.
@@ -135,7 +138,6 @@ def perform_rouge_evaluations(model, dataset, serialize=True, log=True):
     label_accuracies = []
     saved_sentence_inds = []
     ground_truth_labels = []
-    num_output_sentences = dataset.num_output_sentences
     for example_index in range(len(dataset)):
         # get the example graph
         example_graph = dataset[example_index]
@@ -149,7 +151,7 @@ def perform_rouge_evaluations(model, dataset, serialize=True, log=True):
             continue
         true_summaries.append(true_summary)
         # get summary prediction
-        predicted_summary, sentence_indices = generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences)
+        predicted_summary, sentence_indices = generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences, dense=False)
         saved_sentence_inds.append(np.array(sentence_indices) / len(ground_truth["text"]))
         label_accuracy = compute_label_accuracy(sentence_indices, example_label)
         label_accuracies.append(label_accuracy)

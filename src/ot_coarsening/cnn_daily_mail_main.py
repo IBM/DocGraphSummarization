@@ -30,6 +30,8 @@ parser.add_argument('--opt_iters', type=int, default=10)
 parser.add_argument('--eps', type=float, default=1.0)
 parser.add_argument('--ratio', type=float, default=0.1)
 parser.add_argument('--train', action='store_true')
+parser.add_argument('--num_output_sentences', type=int, default=3)
+parser.add_argument('--dense', type=bool, default=False)
 parser.add_argument('--no_extra_mlp', action='store_true')
 
 args = parser.parse_args()
@@ -52,7 +54,10 @@ def validation_test(model, dataset):
     for example_graph in tqdm(loader):
         #example_graph = reshape_batch(example_graph)
         example_graph.to(device)
-        embedding_tensor, new_adj, Ss, opt_loss, output_indices = model(example_graph)
+        if args.dense:
+            embedding_tensor, new_adj, Ss, opt_loss, output_indices = model(example_graph, num_output_sentences=args.num_output_sentences)
+        else:
+            embedding_tensor, edge_index, edge_attr, S, opt_loss, batch_topk_ind = model(example_graph, num_output_sentences = args.num_output_sentences)
         if opt_loss == 0.0:
             continue
         total_loss += opt_loss.item() * num_graphs(example_graph)
@@ -67,7 +72,10 @@ def train_iteration(model, optimizer, loader):
     for graph_index, example_graph in enumerate(tqdm(loader)):
         example_graph.to(device)
         optimizer.zero_grad()
-        embedding_tensor, new_adj, S, opt_loss, output_indices = model(example_graph)
+        if args.dense:
+            embedding_tensor, new_adj, Ss, opt_loss, output_indices = model(example_graph, num_output_sentences=args.num_output_sentences)
+        else:
+            embedding_tensor, edge_index, edge_attr, S, opt_loss, batch_topk_ind = model(example_graph, num_output_sentences=args.num_output_sentences)
         if opt_loss == 0.0:
             continue
         opt_loss.backward()
@@ -111,7 +119,7 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
         
 
 def rouge_validation(model, dataset):
-    rouge_evaluations = evaluation.perform_rouge_evaluations(model, dataset)
+    rouge_evaluations = evaluation.perform_rouge_evaluations(model, dataset, dense=args.dense)
 
 def init_model(dataset, model_type="ot_coarsening"):
     num_layers = 1
@@ -146,8 +154,8 @@ def main():
     run_name = setup_logging()
     # Setup CNNDailyMail data
     graph_constructor = CNNDailyMailGraphConstructor()
-    train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=1.0)
-    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=1.0)
+    train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=1.0, dense=args.dense)
+    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=1.0, dense=args.dense)
     # Initialize the model
     model = init_model(train_dataset)
     # Run training
