@@ -5,6 +5,7 @@ from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.preprocessing import normalize
 from io import StringIO
 from lxml import etree
+from tqdm import tqdm
 import jsonlines
 from bs4 import BeautifulSoup
 
@@ -256,7 +257,7 @@ def process_data(dataset_name):
     dataset_clusters = os.path.join(dataset_root_path, document_sub_path)
     # get the cluster directory names
     clusters = os.listdir(dataset_clusters) 
-    for cluster_name in clusters:
+    for cluster_name in tqdm(clusters):
         # make cluster labels
         cluster_label = make_cluster_label(cluster_name, dataset_root_path, dataset_name) 
         # make cluster tfidf
@@ -270,7 +271,7 @@ def process_data(dataset_name):
     save_json_lines(os.path.join(unprocessed_save_dir, "label.jsonl"), label_lines)
 
 if __name__ == "__main__":
-    datasets = ["DUC2005"]#, "DUC2006", "DUC2007"]
+    datasets = ["DUC2005", "DUC2006", "DUC2007"]
     for dataset_name in datasets:
         process_data(dataset_name)
    

@@ -6,4 +6,4 @@ data/
 *.pyc
 *.swp
 src/ot_coarsening/model_cache/
-
+src/ot_coarsening/wandb/

@@ -1,10 +1,8 @@
 import os
-import gc
 import wandb
 import sys
 sys.path.append(os.environ["GRAPH_SUM"])
-# from src.dataset_management.datasets import get_dataset
-from src.ot_coarsening.dataset_management.cnn_daily_mail import CNNDailyMail
+from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
 from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
 from src.ot_coarsening.ot_coarsening import MultiLayerCoarsening, Coarsening
 import src.ot_coarsening.evaluation as evaluation
@@ -17,16 +15,14 @@ from tqdm import tqdm
 from torch_geometric.data import DataListLoader, DataLoader, DenseDataLoader as DenseLoader, Batch
 from torch_geometric.nn import DataParallel
 from torch.optim import Adam
-from pytorch_memlab import profile, set_target_gpu, profile_every, LineProfiler
-import torch.autograd.profiler as profiler
 import warnings
 warnings.filterwarnings("ignore")
+
 # setup arguments
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
 parser = argparse.ArgumentParser()
-parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--batch_size', type=int, default=20)
+parser.add_argument('--epochs', type=int, default=10)
+parser.add_argument('--batch_size', type=int, default=10)
 parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--lr_decay_factor', type=float, default=1.0)
 parser.add_argument('--lr_decay_step_size', type=int, default=50)
@@ -50,14 +46,13 @@ def validation_test(model, dataset):
     print("Running validation")
     model.eval()
     # make data loader
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)#, num_workers=4)
+    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf", "y"], drop_last=True)#, num_workers=4)
     # go through the validation set
     total_loss = 0
     for example_graph in tqdm(loader):
         #example_graph = reshape_batch(example_graph)
         example_graph.to(device)
-        num_sentences = example_graph.num_sentences
-        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph, num_sentences=num_sentences)
+        embedding_tensor, new_adj, Ss, opt_loss, output_indices = model(example_graph)
         if opt_loss == 0.0:
             continue
         total_loss += opt_loss.item() * num_graphs(example_graph)
@@ -71,22 +66,15 @@ def train_iteration(model, optimizer, loader):
     total_loss = 0
     for graph_index, example_graph in enumerate(tqdm(loader)):
         example_graph.to(device)
-        #print_resident_tensors()
-        #example_graph = reshape_batch(example_graph)
         optimizer.zero_grad()
-        # xs, new_adj, S, opt_loss = model(data, epsilon=0.01, opt_epochs=100)
-        #with profiler.profile(with_stack=True, profile_memory=True) as prof:
-        num_sentences = example_graph.num_sentences
-        xs, edge_index, edge_attr, Ss, opt_loss, output_indices = model(example_graph, num_sentences=num_sentences)
+        embedding_tensor, new_adj, S, opt_loss, output_indices = model(example_graph)
         if opt_loss == 0.0:
             continue
         opt_loss.backward()
         total_loss += opt_loss.item() * num_graphs(example_graph)
         optimizer.step()
-    #print(prof.key_averages(group_by_stack_n=5).table(sort_by='self_cpu_time_total'))
 
     # empty reserved memory
-    #torch.cuda.empty_cache()
     return total_loss / len(loader.dataset)
 
 def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_coarsening/model_cache", run_name=None):
@@ -96,7 +84,7 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
     if not os.path.exists(dirpath):
         os.mkdir(dirpath)
     model_path = os.path.join(dirpath, "savedmodels_eps"+str(args.eps)+"_iter"+str(args.opt_iters)+".pt")
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)#, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf", "y"], drop_last=True)#, num_workers=2)
     model.to(device).reset_parameters()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=0.0001) # adding a negative weight regularizaiton such that it cannot be zero.
 
@@ -157,8 +145,7 @@ def main():
     # Setup logging
     run_name = setup_logging()
     # Setup CNNDailyMail data
-    #graph_constructor = CNNDailyMailGraphConstructor()
-    graph_constructor = None
+    graph_constructor = CNNDailyMailGraphConstructor()
     train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=1.0)
     validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=1.0)
     # Initialize the model

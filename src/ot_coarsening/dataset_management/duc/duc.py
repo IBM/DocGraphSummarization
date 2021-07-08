@@ -19,8 +19,8 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     DUC Dataset
 """
 class DUC(Dataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=True):
-        self.root = "/dccstor/helbling1/data/CNNDM"
+    def __init__(self, transform=None, pre_transform=None, mode="train", year="2005", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False):
+        self.root = "/dccstor/helbling1/data/DUC"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
         self.dimensionality = 768
@@ -41,44 +41,27 @@ class DUC(Dataset):
     @property
     def raw_file_names(self):
         # files = [tfidfs, labels, vocab]
-        if self.mode == "train":
-            return [
-                "unprocessed/train.w2s.tfidf.jsonl",
-                "unprocessed/train.label.jsonl",
-                "unprocessed/vocab",
+        return [
+            "unprocessed/DUC2005/label.jsonl",
+            "unprocessed/DUC2005/tfidf.jsonl",
+            "unprocessed/DUC2006/label.jsonl",
+            "unprocessed/DUC2006/tfidf.jsonl",
+            "unprocessed/DUC2007/label.jsonl",
+            "unprocessed/DUC2007/tfidf.jsonl",
             ]
-        elif self.mode == "test":
-            return [
-                "unprocessed/test.w2s.tfidf.jsonl",
-                "unprocessed/test.label.jsonl",
-                "unprocessed/vocab",
-            ]
-        elif self.mode == "val":
-            return [
-                "unprocessed/val.w2s.tfidf.jsonl",
-                "unprocessed/val.label.jsonl",
-                "unprocessed/vocab",
-            ]
-        else:
-            raise Exception("Unrecognized mode: {}".format(self.mode))
-    
+
     @property
     def label_path(self):
-        return self.raw_file_names[1]
+        return [
+                self.raw_file_names[0],
+                self.raw_file_names[2],
+                self.raw_file_names[4]
+               ]
 
     @property
     def processed_file_names(self):
-        return os.listdir(os.path.join(self.root, "processed", self.mode)) # ['processed/train.pt']
-        """
-                if self.mode == "train":
-                    return os.listdir(os.path.join(self.root, self.mode)) # ['processed/train.pt']
-                elif self.mode == "test":
-                    return ['processed/test.pt']
-                elif self.mode == "val":
-                    return ['processed/val.pt']
-                else:
-                    raise Exception("Unrecognized mode: {}".format(self.mode))
-        """
+        return os.listdir(os.path.join(self.root, "processed", "DUC"+self.year))
+
     def download(self):
         # do nothing becuase the dataset is downloaded
         pass

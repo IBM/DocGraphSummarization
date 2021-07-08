@@ -139,14 +139,10 @@ def compute_bert_word_embedding(bert_model, bert_tokenizer, sentences, unique_wo
     words_to_embeddings = {word: [] for word in unique_words}
     # tokenize the sentence (includes punctuation, before and after tokens, and subword tokens)
     # input_ids_batched = bert_tokenizer(sentences, padding=True)
-    # start = time.time()
     if longform_embedding:
         output_embeddings, output_tokens = compute_longform_embeddings(sentences, padding=True)
     else:
         output_embeddings, output_tokens = compute_embeddings(sentences, padding=True)
-    # finish = time.time()
-    # print("Compute embeddings {}".format(finish - start))
-    # print(input_ids_batched)
     # input_ids_batched, tokens_batched = compute_tokenizations(sentences, padding=True)
     # produce embedding values for each token
     # outputs = model(input_ids_batched)
@@ -354,4 +350,63 @@ class CNNDailyMailGraphConstructor(GraphConstructor):
 class DUCGraphConstructor(GraphConstructor):
 
     def __init__(self):
-        pass
+        self.bert_model = DistilBertModel.from_pretrained('distilbert-base-uncased').to(device)
+        self.bert_tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+        # self.sentence_transformer =  SentenceTransformer('paraphrase-mpnet-base-v2')
+        self.sentence_transformer = SentenceTransformer('paraphrase-distilroberta-base-v1')
+        self.word_embedding_size = self.bert_model.config.hidden_size
+        self.longform_embedding = False
+
+    def construct_graph(self, tfidf, label):
+        # sanity check
+        self._check_word_exists(tfidf, label)
+        # label has the shape
+        # {
+        #    "name": "cluster name",
+        #    "text": {"doc_name": ["sentence 1", "sentence 2"]},
+        #    "summary": {"summerizer id": ["summary sentence 1", "summary sentence 2"]}
+        #    "topic": {"title": "Title", "narr": "Query", "granularity": "granularity level"
+        # }
+        # tfidf has the shape
+        # {
+        #   "name": "cluster name",
+        #   "document_tfidf": {
+        #        "word": tfidf
+        #   }
+        #   "sentence_tfidf": {
+        #       "0": {"word": tfidf}
+        #   } 
+        # }
+        # Get each unique word in the document
+        unique_words = self._get_unique_words(tfidf)
+        # Filter stop words
+        filtered_unique_words = self._filter_stop_words(unique_words)
+        # Get a word embededing for each instance of a word (dictionary word:embedding)
+        word_embeddings = self._get_mean_word_embeddings(label["text"], tfidf, filtered_unique_words)
+        # Make a list of sentence embeddings (num_sentences, embedding_size)
+        sentence_embeddings = compute_bert_sentence_embedding(label["text"], self.sentence_transformer)
+        # Make node attributes
+        node_attributes, word_to_node_index, sentence_to_node_index = self._make_nodes(word_embeddings,
+                                                                                       sentence_embeddings)
+        # Make edges
+        edge_index, edge_attributes = self._make_edges(word_to_node_index,
+                                                       sentence_to_node_index,
+                                                       tfidf,
+                                                       filtered_unique_words)
+        # get labels
+        labels = torch.Tensor(label["label"])
+        # filter invalid graphs
+        if len(label["text"]) < len(label["label"]):
+            return None
+        # Make data and return
+        data_object = Data(x=node_attributes,
+                           edge_index=edge_index,
+                           edge_attr=edge_attributes,
+                           y=labels,
+                           label=label,
+                           tfidf=tfidf,
+                           num_sentences=len(label["text"]))
+
+        return data_object
+
+

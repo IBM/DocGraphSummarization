@@ -64,24 +64,23 @@ def compute_rouge(predicted_summaries, true_summaries):
     score = rouge.get_scores(hyps, refs, avg=True)
     return score
 
-def get_coarse_sentences(ground_truth, coarse_indices, num_sentences, output_node_count):
+def get_coarse_sentences(ground_truth, coarse_indices):
     """
         Returns the coarse sentences in an example graph. 
     """
     # get coarse sentence indices
     coarse_indices = coarse_indices.cpu().numpy()
+    num_sentences = len(ground_truth["text"]) 
     sentence_indices = np.where(coarse_indices < num_sentences)[0].squeeze()
     sentence_indices = coarse_indices[sentence_indices]
     if len(np.shape(sentence_indices)) == 0:
         sentence_indices = [sentence_indices]
-    if np.shape(sentence_indices)[0] > output_node_count:
-        sentence_indices = sentence_indices[0: output_node_count]
     # get the sentences
     text = ground_truth["text"]
     coarse_sentences = [text[sentence_index] for sentence_index in sentence_indices]
     return coarse_sentences, sentence_indices
 
-def generate_predicted_summary(model, example_graph, ground_truth, output_node_count):
+def generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences):
     """
         Generates a textual summmary of the example_graph using
         the given model.
@@ -96,12 +95,10 @@ def generate_predicted_summary(model, example_graph, ground_truth, output_node_c
     #example_graph.y = example_graph.y.unsqueeze(0) 
     #example_graph.mask = example_graph.mask.unsqueeze(0)
     #example_graph.adj = example_graph.adj.unsqueeze(0)
-    output_node_counts = torch.Tensor([output_node_count])
-    _, _, _, _, _, coarse_indices = model.forward(example_graph, output_node_counts=output_node_counts, num_sentences=[num_sentences]) 
+    _, _, _, _, coarse_indices = model.forward(example_graph) 
     # should be a 1D tensor of indices
     coarse_indices = coarse_indices[0]
-    predicted_summary, sentence_indices = get_coarse_sentences(ground_truth, coarse_indices, num_sentences, output_node_count)
-    assert len(predicted_summary) == output_node_count
+    predicted_summary, sentence_indices = get_coarse_sentences(ground_truth, coarse_indices)
     
     return predicted_summary, sentence_indices
 
@@ -138,6 +135,7 @@ def perform_rouge_evaluations(model, dataset, serialize=True, log=True):
     label_accuracies = []
     saved_sentence_inds = []
     ground_truth_labels = []
+    num_output_sentences = dataset.num_output_sentences
     for example_index in range(len(dataset)):
         # get the example graph
         example_graph = dataset[example_index]
@@ -150,9 +148,8 @@ def perform_rouge_evaluations(model, dataset, serialize=True, log=True):
         if len(true_summary) > len(ground_truth["text"]) or len(example_label) == 0:
             continue
         true_summaries.append(true_summary)
-        output_node_count = 3# len(example_label)
         # get summary prediction
-        predicted_summary, sentence_indices = generate_predicted_summary(model, example_graph, ground_truth, output_node_count)
+        predicted_summary, sentence_indices = generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences)
         saved_sentence_inds.append(np.array(sentence_indices) / len(ground_truth["text"]))
         label_accuracy = compute_label_accuracy(sentence_indices, example_label)
         label_accuracies.append(label_accuracy)
@@ -182,6 +179,7 @@ def perform_random_rouge_baseline(dataset):
     true_summaries = []
     label_accuracies = []
     saved_sentence_inds = [] 
+    num_output_sentences = dataset.num_output_sentences
     for example_index in range(len(dataset)):
         # get the example graph
         example_graph = dataset[example_index]
@@ -193,9 +191,8 @@ def perform_random_rouge_baseline(dataset):
         if len(true_summary) > len(ground_truth["text"]) or len(example_label) == 0:
             continue
         true_summaries.append(true_summary)
-        output_node_count = 3 #len(true_summary)
         # choose random summary 
-        predicted_summary_indices = random.sample(range(0, len(ground_truth["text"])), output_node_count)
+        predicted_summary_indices = random.sample(range(0, len(ground_truth["text"])), num_output_sentences)
         saved_sentence_inds.append(np.array(predicted_summary_indices) / len(ground_truth["text"]))
         label_accuracy = compute_label_accuracy(predicted_summary_indices, example_label)
         label_accuracies.append(label_accuracy)

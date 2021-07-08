@@ -47,6 +47,7 @@ class CNNDailyMail(InMemoryDataset):
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
         self.dimensionality = 768
+        self.num_output_sentences = 3
         self.reduce_dimensionality = reduce_dimensionality
         if self.reduce_dimensionality:
             self.dimensionality_reducer = PCADimensionalityReducer()
@@ -228,7 +229,7 @@ class CNNDailyMail(InMemoryDataset):
         graph.x = new_x
         return graph
     
-    def get(self, idx, dense=False):
+    def get(self, idx, dense=True):
         data_dir = os.path.join(self.root, "processed", self.mode)
         graph_data_path = os.path.join(data_dir, "data_{}.pt".format(idx))
         # check if path exists
