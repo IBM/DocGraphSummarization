@@ -10,12 +10,13 @@ from src.ot_coarsening.ot_coarsening_dense import Coarsening as DenseCoarsening
 import src.ot_coarsening.evaluation as evaluation
 import torch
 import torch.nn.functional as F
+from torch.nn import BCELoss
 import time
 import numpy as np
 import argparse
 from tqdm import tqdm
 from torch_geometric.data import DataListLoader, DataLoader, DenseDataLoader as DenseLoader, Batch
-from torch_geometric.nn import DataParallel
+from torch_geometric.nn import DataParallel, GCNConv
 from torch.optim import Adam
 import warnings
 warnings.filterwarnings("ignore")
@@ -54,12 +55,8 @@ def validation_test(model, dataset):
     # go through the validation set
     total_loss = 0
     for example_graph in tqdm(loader):
-        #example_graph = reshape_batch(example_graph)
         example_graph.to(device)
-        if args.dense:
-            embedding_tensor, new_adj, Ss, opt_loss, output_indices = model(example_graph, num_output_sentences=args.num_output_sentences)
-        else:
-            embedding_tensor, edge_index, edge_attr, S, opt_loss, batch_topk_ind = model(example_graph, num_output_sentences = args.num_output_sentences)
+        _, _, _, _, opt_loss, _ = model(example_graph, num_output_sentences=args.num_output_sentences)
         if opt_loss == 0.0:
             continue
         total_loss += opt_loss.item() * num_graphs(example_graph)
@@ -74,10 +71,7 @@ def train_iteration(model, optimizer, loader):
     for graph_index, example_graph in enumerate(tqdm(loader)):
         example_graph.to(device)
         optimizer.zero_grad()
-        if args.dense:
-            embedding_tensor, new_adj, Ss, opt_loss, output_indices = model(example_graph, num_output_sentences=args.num_output_sentences)
-        else:
-            embedding_tensor, edge_index, edge_attr, S, opt_loss, batch_topk_ind = model(example_graph, num_output_sentences=args.num_output_sentences)
+        _, _, _, _, opt_loss, _ = model(example_graph, num_output_sentences=args.num_output_sentences)
         if opt_loss == 0.0:
             continue
         opt_loss.backward()
@@ -95,7 +89,6 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
         os.mkdir(dirpath)
     model_path = os.path.join(dirpath, "savedmodels_eps"+str(args.eps)+"_iter"+str(args.opt_iters)+".pt")
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, exclude_keys=["label", "tfidf"], drop_last=True)#, num_workers=2)
-    model.to(device).reset_parameters()
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=0.0001) # adding a negative weight regularizaiton such that it cannot be zero.
 
     if torch.cuda.is_available():
@@ -112,8 +105,8 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
         # Log the loss
         loss_dictionary = {
             "Unsupervised Train Loss": train_loss,
-            "Rouge Validation Loss": rouge_validation_loss,
-            "Unsupervised Validation Loss": unsupervised_validation_loss
+            "Unsupervised Validation Loss": unsupervised_validation_loss,
+            "Rouge Validation Loss": rouge_validation_loss
         } 
         wandb.log(loss_dictionary)
         # save the model
@@ -122,24 +115,6 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
 
 def rouge_validation(model, dataset):
     rouge_evaluations = evaluation.perform_rouge_evaluations(model, dataset, dense=args.dense)
-
-def init_model(dataset, model_type="ot_coarsening", dense=False):
-    num_layers = 1
-    num_hiddens = 2048
-    if model_type == "ot_coarsening":
-        if not dense:
-            model = Coarsening(dataset, num_hiddens, ratio=args.ratio, epsilon=args.eps, opt_epochs=args.opt_iters)
-        else:
-            model = DenseCoarsening(dataset, num_hiddens, ratio=args.ratio, epsilon=args.eps, opt_epochs=args.opt_iters)
-    elif model_type == "u_net":
-        assert num_layers == 1
-        in_channels = dataset.dimensionality
-        out_channels = dataset.dimensionality
-        model = GraphUNetCoarsening(in_channels, num_hiddens, out_channels, num_layers)
-    elif model_type == "multilayer_ot_coarsening":
-        model = MultiLayerCoarsening(dataset, num_hiddens, ratio=args.ratio)
-    
-    return model
 
 def setup_logging():
     """
@@ -153,6 +128,60 @@ def setup_logging():
     # 3. Log the config
     # 4. Return the run name
     return wandb.run.name 
+
+class BasicSupervisedModel(torch.nn.Module):
+    
+    def __init__(self):
+        super(BasicSupervisedModel, self).__init__()
+        # implement two GCN layers
+        self.input_dimensionality = 768
+        self.hidden = 1024
+        self.layer_one = GCNConv(self.input_dimensionality, self.hidden)
+        self.layer_two = GCNConv(self.hidden, 1)
+        self.supervised_loss = BCELoss()
+
+    """ 
+        Takes a graph as input and outputs a onehot vector predicting 
+        important sentences. Assume no batch.
+    """
+    def forward(self, input_graph, num_output_sentences=3):
+        # unpack input
+        data_list = input_graph.to_data_list()
+        loss = 0.0
+        coarse_indices = []
+        for data in data_list:
+            x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
+            edge_weight = edge_attr.squeeze().float()
+            num_sentences = data.num_sentences
+            y = data.y
+            # run the layers
+            x = self.layer_one(x, edge_index, edge_weight)
+            output_attention = self.layer_two(x, edge_index, edge_weight).squeeze()
+            assert output_attention.shape[0] == x.shape[0]
+            # convert the attention to a onehot vector
+            sentence_attention = output_attention[0:num_sentences]
+            # get topk
+            num_output_nodes = torch.nonzero(y >= 0).shape[0]
+            if num_output_nodes == 0:
+                num_output_nodes = 1
+            topk_values, topk_indices = torch.topk(sentence_attention, num_output_nodes)
+            cutoff = topk_values[-1]
+            # get all coarse indices
+            all_topk_values, all_topk_indices = torch.topk(output_attention, x.shape[0])
+            coarse_inds = all_topk_indices[torch.nonzero(all_topk_values >= cutoff).squeeze()]
+            coarse_indices.append(coarse_inds)
+            # compute output 
+            output_onehot = torch.sigmoid(sentence_attention)
+            # convert label to a onehot vector
+            label_indices = y[torch.nonzero(y > 0)].long().squeeze()
+            if len(label_indices.shape) == 0:
+                label_indices = label_indices[None]
+            label_onehot = torch.zeros(num_sentences).to(device).float()
+            label_onehot[label_indices] = 1.0
+            # compute the loss
+            loss += self.supervised_loss(output_onehot, label_onehot)
+            
+        return None, None, None, None, loss / len(data_list), coarse_indices
  
 """
     Main function for performing OTCoarsening on a DailyMail graph
@@ -160,17 +189,15 @@ def setup_logging():
 def main():
     # Setup logging
     run_name = setup_logging()
-    model_type = "u_net"
     # Setup CNNDailyMail data
     graph_constructor = CNNDailyMailGraphConstructor()
     train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=1.0, dense=args.dense)
     validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=1.0, dense=args.dense)
     # Initialize the model
-    model = init_model(train_dataset, dense=args.dense, model_type=model_type)
+    model = BasicSupervisedModel()
+    model.to(device)
     # Run training
     train(model, train_dataset, validation_dataset, run_name=run_name)
 
 if __name__ == "__main__":
-    #torch.multiprocessing.set_start_method('spawn')# good solution !!!!("iteration")
-    torch.backends.cudnn.benchmark = True
     main()

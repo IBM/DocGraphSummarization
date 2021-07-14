@@ -9,11 +9,10 @@ from sinkhorn import sinkhorn_loss_default
 from pytorch_memlab import profile, set_target_gpu, profile_every
 
 class CoarsenBlock(torch.nn.Module):
-    def __init__(self, in_channels, assign_ratio, num_output_sentences):
+    def __init__(self, in_channels, assign_ratio):
         super(CoarsenBlock, self).__init__()
 
         self.gcn_att = DenseGCNConv(in_channels, 1, bias=True)
-        self.num_output_sentences = num_output_sentences
         self.assign_ratio = assign_ratio
 
     def normalize_batch_adj(self, adj):  # adj shape: batch_size * num_node * num_node, D^{-1/2} (A+I) D^{-1/2}
@@ -25,13 +24,13 @@ class CoarsenBlock(torch.nn.Module):
         newA = (adj.sum(-1)>0).float().unsqueeze(-1).to(adj.device) * newA
         return newA
 
-    def get_topk_range_for_sentences(self, alpha_vec, num_sentences):
+    def get_topk_range_for_sentences(self, alpha_vec, num_sentences, num_output_sentences):
         alpha_vec = alpha_vec.detach().cpu().numpy()
         full_argsort = np.argsort(alpha_vec)[::-1]
         topk_ind = []
         sentences_so_far = 0
         for index in full_argsort:
-            if sentences_so_far >= self.num_output_sentences:
+            if sentences_so_far >= num_output_sentences:
                 break
             is_sentence = index < num_sentences
             if is_sentence:
@@ -46,7 +45,8 @@ class CoarsenBlock(torch.nn.Module):
     def reset_parameters(self):
         self.gcn_att.reset_parameters()
 
-    def forward(self, x, adj, num_sentences=None):
+    def forward(self, x, adj, data, num_output_sentences=3):
+        num_sentences = data.num_sentences
         # alpha_vec = F.softmax(self.att(x).sum(-1), -1)
         alpha_vec = F.sigmoid(torch.pow(self.gcn_att(x,adj),2)).squeeze() # b*n*1 --> b*n
         if len(alpha_vec.shape) < 2:
@@ -63,7 +63,7 @@ class CoarsenBlock(torch.nn.Module):
                 cut_value = temptopk[-1]
             else:
                 # This is in the evaluation phase
-                temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec[j] , num_sentences[j])
+                temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec[j] , num_sentences[j], num_output_sentences)
                 cut_value = temptopk[-1]
                 batch_topk_ind.append(topk_ind)
         # cut_alpha_vec = torch.mul( ((alpha_vec - torch.unsqueeze(cut_value, -1))>=0).float(), alpha_vec)  # b * n
@@ -82,15 +82,14 @@ class CoarsenBlock(torch.nn.Module):
         return embedding_tensor, new_adj, S, batch_topk_ind
 
 class Coarsening(torch.nn.Module):
-    def __init__(self, dataset, hidden, ratio=0.5, epsilon=1.0, opt_epochs=100, num_output_sentences=3): # we only use 1 layer for coarsening
+    def __init__(self, dataset, hidden, ratio=0.5, epsilon=1.0, opt_epochs=100): # we only use 1 layer for coarsening
         super(Coarsening, self).__init__()
         self.ratio = ratio
         self.epsilon = epsilon
         self.opt_epochs = opt_epochs
-        self.num_output_sentences = num_output_sentences
         # self.embed_block1 = GNNBlock(dataset.num_features, hidden, hidden)
         self.embed_block1 = DenseGCNConv(dataset.num_features, hidden)
-        self.coarse_block1 = CoarsenBlock(hidden, ratio, num_output_sentences)
+        self.coarse_block1 = CoarsenBlock(hidden, ratio)
         self.embed_block2 = DenseGCNConv(hidden, dataset.num_features)
         self.jump = JumpingKnowledge(mode='cat')
 
@@ -104,13 +103,13 @@ class Coarsening(torch.nn.Module):
         # self.lin1.reset_parameters()
         # self.lin2.reset_parameters()
 
-    def forward(self, data, p=2):
+    def forward(self, data, p=2, num_output_sentences=3):
         x, adj, mask = data.x, data.adj, data.mask
         num_sentences = data.num_sentences
         batch_num_nodes = data.mask.sum(-1)
         x1 = F.relu(self.embed_block1(x, adj, mask, add_loop=True))
         # xs = [x1.mean(dim=1)]
-        coarse_x, new_adj, S, output_indices= self.coarse_block1(x1, adj, num_sentences=num_sentences)
+        coarse_x, new_adj, S, output_indices= self.coarse_block1(x1, adj, data, num_output_sentences=num_output_sentences)
         xs = [coarse_x.mean(dim=1)]
         x2 = F.tanh(self.embed_block2(coarse_x, new_adj, mask, add_loop=True))
         xs.append(x2.mean(dim=1))
@@ -193,7 +192,7 @@ class MultiLayerCoarsening(torch.nn.Module):
                 continue
             opt_loss += sinkhorn_loss_default(x3, x4, epsilon, niter=opt_epochs).float()
 
-        return xs, new_adjs, Ss, opt_loss
+        return xs, new_adjs, Ss, opt_loss 
 
     def get_nonzero_rows(self, M):# M is a matrix
         # row_ind = M.sum(-1).nonzero().squeeze() #nonzero has bugs in Pytorch 1.2.0.........

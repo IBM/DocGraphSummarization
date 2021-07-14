@@ -13,13 +13,19 @@ import sys
 sys.path.append(GRAPH_SUM)
 from src.ot_coarsening.dataset_management.dimensionality_reduction import PCADimensionalityReducer
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu')#torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def file_len(fname):
+    with open(fname) as f:
+        for i, l in enumerate(f):
+            pass
+    return i + 1
 
 """
     DUC Dataset
 """
 class DUC(Dataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", year="2005", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False):
+    def __init__(self, transform=None, pre_transform=None, mode="train", year="2005", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, overwrite_existing=False, reduce_dimensionality=False):
         self.root = "/dccstor/helbling1/data/DUC"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
@@ -30,6 +36,7 @@ class DUC(Dataset):
             self.dimensionality_reducer.load()
             self.dimensionality = self.dimensionality_reducer.reduced_size
         self.proportion_of_dataset = proportion_of_dataset
+        self.year = year
         self.perform_processing = perform_processing
         self.overwrite_existing = overwrite_existing
         self.max_number_of_nodes = max_number_of_nodes
@@ -42,21 +49,13 @@ class DUC(Dataset):
     def raw_file_names(self):
         # files = [tfidfs, labels, vocab]
         return [
-            "unprocessed/DUC2005/label.jsonl",
-            "unprocessed/DUC2005/tfidf.jsonl",
-            "unprocessed/DUC2006/label.jsonl",
-            "unprocessed/DUC2006/tfidf.jsonl",
-            "unprocessed/DUC2007/label.jsonl",
-            "unprocessed/DUC2007/tfidf.jsonl",
-            ]
+            "unprocessed/DUC"+self.year+"/tfidf.jsonl",
+            "unprocessed/DUC"+self.year+"/label.jsonl",
+        ]
 
     @property
     def label_path(self):
-        return [
-                self.raw_file_names[0],
-                self.raw_file_names[2],
-                self.raw_file_names[4]
-               ]
+        return [self.raw_file_names[1]]
 
     @property
     def processed_file_names(self):
@@ -80,7 +79,7 @@ class DUC(Dataset):
     """
         Reads the given raw files into json data objects
     """
-    def _read_raw_files_to_data(self, tfidf_file, label_file, vocab):
+    def _read_raw_files_to_data(self, tfidf_file, label_file):
         print("Reading raw files to data ...")
         stopping_index = file_len(os.path.join(self.root, tfidf_file)) * self.proportion_of_dataset
         current_index = 0
@@ -90,6 +89,7 @@ class DUC(Dataset):
                     try: 
                         # read label
                         label = label_reader.read()
+                        print("read label and tfidf")
                         # check if file exists
                         save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
                         if not self.overwrite_existing and os.path.exists(save_path):
@@ -146,8 +146,8 @@ class DUC(Dataset):
             return
         # Load the raw files
         raw_file_names = self.raw_file_names
-        tfidf_file, label_file, vocab = raw_file_names
-        data_list = self._read_raw_files_to_data(tfidf_file, label_file, vocab)
+        tfidf_file, label_file = raw_file_names
+        data_list = self._read_raw_files_to_data(tfidf_file, label_file)
         # if self.pre_filter is not None:
         #    data_list = [data for data in data_list if self.pre_filter(data)]
         #if self.pre_transform is not None:

@@ -78,6 +78,9 @@ def xml_to_sentences(document_path):
     file_string = file_string.replace("<P>", "")
     file_string = file_string.replace("</P>", "")
     file_string = file_string.replace("\n", " ")
+    file_string = file_string.replace("\"", "")
+    file_string = file_string.replace("'", "")
+    file_stirng = file_string.strip()
     file_string = file_string.lower()
     sentences = file_string.split(".")
     sentences = [sentence for sentence in sentences if len(sentence.strip()) != 0]
@@ -114,20 +117,24 @@ def compute_sentence_tfidf(document_name, cluster_label):
     tfidfvector = compress_array(tfidf_weight, id2word)
     return tfidfvector
 
-def compute_document_tfidf(dataset_name, document_name, cluster_label):
+def compute_document_tfidf(document_name, cluster_label):
     dataset_root_path = os.path.join(root_path, "unprocessed", dataset_name)
     document_tfidf = {} 
-    # get the sentences from all documents and aggregate them 
+    # document name index
     texts = cluster_label["text"]
-    all_text = [inner for outer in texts.values()
-                for inner in outer]
-    # compute the tfidf for the specific document
-    current_document = cluster_label["text"][document_name]
-    current_vectorizer = CountVectorizer(lowercase=True)
-    word_count = current_vectorizer.fit_transform(current_document)
-    current_vocab = current_vectorizer.vocabulary_.items()
-    current_vocab, _ = zip(*current_vocab)
-    # compute tfidf
+    document_names = list(texts.keys())
+    document_name_index = 0
+    for index, name in enumerate(document_names):
+        if name == document_name:
+            document_name_index = index
+            break
+    # get the sentences from all documents and aggregate them 
+    all_text = []
+    for doc_name in texts.keys():
+        doc_text = texts[doc_name]
+        # merge all sentences in the doc
+        merged = ".".join(doc_text)
+        all_text.append(merged)
     vectorizer = CountVectorizer(lowercase=True)
     word_count = vectorizer.fit_transform(all_text)
     tfidf_transformer = TfidfTransformer()
@@ -135,10 +142,10 @@ def compute_document_tfidf(dataset_name, document_name, cluster_label):
     tfidf_weight = tfidf.toarray()
     id2word = {} 
     for w, tfidf_id in vectorizer.vocabulary_.items():   # word -> tfidf matrix row number
-        if w in current_vocab:
-            id2word[tfidf_id] = w
+        id2word[tfidf_id] = w
     tfidfvector = compress_array(tfidf_weight, id2word)
-    return tfidfvector
+    print(tfidfvector)
+    return tfidfvector[document_name_index]
 
 """
     Given a cluster name it returns the human created
@@ -189,7 +196,8 @@ def get_cluster_topic(dataset_root_path, dataset_name, cluster_name):
         topic_json = {}
         topic_json["title"] = topic.find("title").get_text().strip()
         topic_json["narr"] =  topic.find("narr").get_text().strip().replace("\n", " ").lower()
-        if len(topic.find("granularity")) > 0:
+        granularity = topic.find("granularity")
+        if not granularity is None:
             topic_json["granularity"] = topic.find("granularity").get_text().strip()
 
     return topic_json
@@ -232,6 +240,8 @@ def make_cluster_label(cluster_name, dataset_root_path, dataset_name):
 
 def make_cluster_tfidf(cluster_name, dataset_root_path, cluster_label):
     cluster_tfidf = {"name": cluster_name}
+    cluster_tfidf["document_tfidf"] = {}
+    cluster_tfidf["sentence_tfidf"] = {}
     # compute the total cluster vocab
     # get document paths
     document_sub_path = dataset_name.lower() + "_docs"
@@ -239,11 +249,11 @@ def make_cluster_tfidf(cluster_name, dataset_root_path, cluster_label):
     document_paths = os.listdir(cluster_doc_path)
     for document_name in document_paths:
         # compute the document tfidf
-        document_tfidf = compute_document_tfidf(dataset_name, document_name, cluster_label)
-        cluster_tfidf["document_tfidf"] = document_tfidf
+        document_tfidf = compute_document_tfidf(document_name, cluster_label)
+        cluster_tfidf["document_tfidf"][document_name] = document_tfidf
         # compute the sentence tfidf
         sentence_tfidf = compute_sentence_tfidf(document_name, cluster_label)
-        cluster_tfidf["sentence_tfidf"] = sentence_tfidf
+        cluster_tfidf["sentence_tfidf"][document_name] = sentence_tfidf
     
     return cluster_tfidf
 

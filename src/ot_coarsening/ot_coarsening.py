@@ -2,20 +2,36 @@
 # GNN(fe, hidden) - Coarsen - GNN(hidden, fe) ).
 import torch
 import torch.nn.functional as F
-from torch.nn import Linear
+from torch.nn import Linear, BCELoss
 import torch_geometric.utils as U
 import torch_geometric.transforms as T
 from torch_geometric.data import Data, Batch
-from torch_geometric.nn import DenseSAGEConv, DenseGCNConv, JumpingKnowledge, GCNConv
+from torch_geometric.nn import DenseSAGEConv, DenseGCNConv, JumpingKnowledge, GCNConv, GATConv, RGCNConv
 from sinkhorn import sinkhorn_loss_default
 #from pytorch_memlab import profile, set_target_gpu, profile_every
 import numpy as np
 import time
 
+def convert_y_to_onehot(y, num_sentences):
+    """
+        Converts the y vector to a one hot encoded vector
+    """
+    batch_size = num_sentences.shape[0]
+    onehot_vectors = []
+    for index in range(batch_size):
+        current_num_sentences = num_sentences[index].int()
+        current_y = y[index]
+        current_y = current_y[torch.nonzero(current_y > 0)].squeeze().long()
+        base_vector = torch.zeros(current_num_sentences).to(y.device)
+        base_vector[current_y] = 1
+        onehot_vectors.append(base_vector)
+
+    return onehot_vectors
+
 class CoarsenBlock(torch.nn.Module):
     def __init__(self, in_channels, assign_ratio, max_number_of_nodes=1000):
         super(CoarsenBlock, self).__init__()
-        self.gcn_att = GCNConv(in_channels, 1, bias=True)
+        self.gcn_att = RGCNConv(in_channels, 1, num_relations=1)
         self.assign_ratio = assign_ratio
         self.max_number_of_nodes = max_number_of_nodes
 
@@ -24,20 +40,16 @@ class CoarsenBlock(torch.nn.Module):
 
     def get_topk_range_for_sentences(self, alpha_vec, num_output_sentences, num_sentences):
         assert num_sentences >= num_output_sentences
-        alpha_vec = alpha_vec.detach().cpu().numpy()
-        full_argsort = np.argsort(alpha_vec)[::-1]
-        topk_ind = [] 
-        num_sentences_saved = 0
-        for index in full_argsort:
-            if num_sentences_saved == num_output_sentences:
+        full_argsort = torch.flip(torch.argsort(alpha_vec), [0])
+        seen_sentences = 0
+        for index in range(len(alpha_vec)):
+            node_index = full_argsort[index]
+            if node_index < num_sentences:
+                seen_sentences += 1
+            if seen_sentences == num_output_sentences:
                 break
-            is_sentence = index < num_sentences 
-            if is_sentence:
-                num_sentences_saved += 1
-            topk_ind.append(index)
-        
-        temptopk = torch.Tensor(alpha_vec[topk_ind])
-        topk_ind = torch.Tensor(topk_ind).int()
+        topk_ind = full_argsort[0: index + 1]
+        temptopk = alpha_vec[topk_ind]
         # return temptopk and topkind 
         return temptopk, topk_ind
     
@@ -52,7 +64,8 @@ class CoarsenBlock(torch.nn.Module):
         batch_num_nodes = mask.sum(-1)
         max_num_nodes = torch.max(batch_num_nodes)
         # compute attention
-        alpha_vec = self.gcn_att(x, edge_index, edge_weight)
+        #alpha_vec = self.gcn_att(x, edge_index, edge_weight)
+        alpha_vec = self.gcn_att(x, edge_index)
         alpha_vec = torch.pow(alpha_vec, 2)
         alpha_vec = torch.sigmoid(alpha_vec).squeeze() # b*n*1 --> b*n
         # reshape alpha_vec
@@ -118,6 +131,7 @@ class CoarsenBlock(torch.nn.Module):
         cut_value = 0
         # This is in the evaluation phase
         temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec, num_output_sentences, num_sentences)
+        print(topk_ind.requires_grad)
         cut_value = temptopk[-1]
         # calculate S
         cut_alpha_vec = torch.relu(alpha_vec + 0.0000001 - cut_value)
@@ -133,8 +147,11 @@ class CoarsenBlock(torch.nn.Module):
         dense_coarse_graph = Data(adj=coarse_adj, x=x)
         sparse_graph = self.convert_dense_to_sparse(dense_coarse_graph)
         del sparse_graph.adj
+        # index mask
+        index_mask = torch.zeros_like(alpha_vec).float().to(x.device)
+        index_mask[topk_ind] = 1.0
 
-        return sparse_graph, S, topk_ind
+        return sparse_graph, S, topk_ind, index_mask
 
     def forward(self, data, num_output_sentences=3):
         # compute attention scores
@@ -145,6 +162,7 @@ class CoarsenBlock(torch.nn.Module):
         # go through the batch and coarsen each of the graphs
         batch_topk_ind = []
         sparse_graphs = []
+        index_masks = []
         Ss = []
         for j in range(batch_size):
             # prepare data for individual forward pass
@@ -152,44 +170,79 @@ class CoarsenBlock(torch.nn.Module):
             # prepare alpha vec 
             current_alpha_vec = alpha_vec[j]
             # run forward pass for this single graph
-            sparse_graph, S, topk_ind = self.single_graph_forward(current_alpha_vec,
+            sparse_graph, S, topk_ind, index_mask = self.single_graph_forward(current_alpha_vec,
                                                                   current_graph, 
                                                                   num_output_sentences=num_output_sentences)
             # add to lists
             Ss.append(S)
             sparse_graphs.append(sparse_graph)
             batch_topk_ind.append(topk_ind)
+            index_masks.append(index_mask)
         # convert lists to batched input format
         sparse_batch = Batch.from_data_list(sparse_graphs)         
-        return sparse_batch, Ss, batch_topk_ind
+        return sparse_batch, Ss, batch_topk_ind, index_masks
 
 class Coarsening(torch.nn.Module):
-    def __init__(self, dataset, hidden, ratio=0.1, epsilon=0.01, opt_epochs=100, embedding_compression=False): # we only use 1 layer for coarsening
+    def __init__(self, dataset, hidden, ratio=0.1, epsilon=0.01, opt_epochs=100, embedding_compression=False, supervised=False): # we only use 1 layer for coarsening
         super(Coarsening, self).__init__()
         self.ratio = ratio
         self.epsilon = epsilon
+        self.supervised = supervised
         self.opt_epochs = opt_epochs
         self.embedding_compression = embedding_compression
         #self.compressed_dimensionality = dataset.num_features // 5
         #self.compression = Linear(dataset.num_features, self.compressed_dimensionality)
-        self.embed_block1 = GCNConv(dataset.dimensionality, hidden)
+        self.embed_block1 = RGCNConv(dataset.dimensionality, hidden, num_relations=1)
         self.coarse_block1 = CoarsenBlock(hidden, ratio)
-        self.embed_block2 = GCNConv(hidden, dataset.dimensionality)
+        self.embed_block2 = RGCNConv(hidden, dataset.dimensionality, num_relations=1)
         #self.uncompress = Linear(self.compressed_dimensionality, dataset.num_features)
+        self.supervised_loss = BCELoss()
 
     def reset_parameters(self):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
 
-    def compute_loss(self, data, coarse_data, epsilon, opt_epochs, p):
+    """
+        Computes the supervised loss
+    """
+    def compute_supervised_loss(self, data, index_masks):
+        max_summary_length = 10
+        num_sentences = data.num_sentences
+        y = data.y
+        y = torch.reshape(y, (-1, max_summary_length))
+        onehot_y = convert_y_to_onehot(y, num_sentences)
+        batch_size = len(index_masks)
+        # go through each element
+        cumulative_loss = 0.0
+        for index in range(batch_size):
+            label_onehot = onehot_y[index]
+            index_mask = index_masks[index].int()
+            sentence_mask = torch.zeros(num_sentences[index], requires_grad=True).to(data.x.device)
+            onehot_predicted = index_mask[0:num_sentences[index]] * sentence_mask
+            print("predicted requies grad")
+            print(onehot_predicted.requires_grad)
+            # compute the supervised loss
+            current_loss = self.supervised_loss(onehot_predicted[None, :], label_onehot[None, :])
+            cumulative_loss += current_loss
+
+        mean_loss = cumulative_loss / batch_size
+
+        return mean_loss
+
+    def compute_loss(self, data, coarse_data, epsilon, opt_epochs, p, sentence=False):
         num_sentences = data.num_sentences
         opt_loss = 0.0
         data_list = data.to_data_list()
         coarse_list = coarse_data.to_data_list()
         for i in range(data.num_graphs):
             num_sentences_current = num_sentences[i]
-            x = data_list[i].x[0: num_sentences_current]
-            x2 = coarse_list[i].x[0: num_sentences_current]
+            if sentence:
+                x = data_list[i].x[0: num_sentences_current]
+                x2 = coarse_list[i].x[0: num_sentences_current]
+            else:
+                x = data_list[i].x
+                x2 = coarse_list[i].x
+
             x3 = self.get_nonzero_rows(x)
             opt_loss += sinkhorn_loss_default(x3, x2, epsilon, niter=opt_epochs, p=p)
 
@@ -221,27 +274,32 @@ class Coarsening(torch.nn.Module):
         if self.embedding_compression:
             compressed_embeddings = self.compression(x)
             x = torch.relu(compressed_embeddings)
-        x1 = self.embed_block1(x, edge_index, edge_weight)
+        #x1 = self.embed_block1(x, edge_index, edge_weight)
+        x1 = self.embed_block1(x, edge_index)
         x1 = torch.relu(x1)
         # make batched data object
         data.x = x1
         # convert the data to dense for this phase
-        coarse_batch, S, batch_topk_ind = self.coarse_block1(data,
+        coarse_batch, S, batch_topk_ind, index_masks  = self.coarse_block1(data,
                                                              num_output_sentences=num_output_sentences)
-
         coarse_x = coarse_batch.x
         xs = [coarse_x.mean(dim=1)]
         coarse_edge_index = coarse_batch.edge_index
         coarse_edge_attr = coarse_batch.edge_attr
         coarse_edge_weight = coarse_edge_attr.squeeze().float()
-        x2 = torch.tanh(self.embed_block2(coarse_x, coarse_edge_index, coarse_edge_weight))
+        # x2 = torch.tanh(self.embed_block2(coarse_x, coarse_edge_index, coarse_edge_weight))
+        x2 = torch.tanh(self.embed_block2(coarse_x, coarse_edge_index))
         # uncompress
         if self.embedding_compression:
             uncompressed_embeddings = self.uncompress(x2)
             x2 = torch.relu(uncompressed_embeddings)
         coarse_batch.x = x2
         xs.append(x2.mean(dim=1))
-        opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p)
+        # compute loss
+        if self.supervised:
+            opt_loss = self.compute_supervised_loss(data_copy, index_masks) 
+        else:
+            opt_loss = self.compute_loss(data_copy, coarse_batch, self.epsilon, self.opt_epochs, p)
 
         return xs, edge_index, edge_attr, S, opt_loss, batch_topk_ind
 
@@ -272,7 +330,6 @@ class MultiLayerCoarsening(torch.nn.Module):
         self.embed_block1.reset_parameters()
         self.coarse_block1.reset_parameters()
         self.embed_block2.reset_parameters()
-
         self.jump.reset_parameters()
         # self.lin1.reset_parameters()
 

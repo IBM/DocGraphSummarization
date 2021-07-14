@@ -60,7 +60,7 @@ def compute_rouge(predicted_summaries, true_summaries):
         ref = "\n".join(true_summary)
         hyps.append(hyp)
         refs.append(ref)
-    
+     
     score = rouge.get_scores(hyps, refs, avg=True)
     return score
 
@@ -72,6 +72,10 @@ def get_coarse_sentences(ground_truth, coarse_indices):
     coarse_indices = coarse_indices.cpu().numpy()
     num_sentences = len(ground_truth["text"]) 
     sentence_indices = np.where(coarse_indices < num_sentences)[0].squeeze()
+    print("coarse indices")
+    print(coarse_indices)
+    print("sentence indices")
+    print(sentence_indices)
     sentence_indices = coarse_indices[sentence_indices]
     if len(np.shape(sentence_indices)) == 0:
         sentence_indices = [sentence_indices]
@@ -95,13 +99,14 @@ def generate_predicted_summary(model, example_graph, ground_truth, num_output_se
     #example_graph.y = example_graph.y.unsqueeze(0) 
     #example_graph.mask = example_graph.mask.unsqueeze(0)
     #example_graph.adj = example_graph.adj.unsqueeze(0)
-    if dense:
-        _, _, _, _, coarse_indices = model(example_graph, num_output_sentences=num_output_sentences)
-    else:
-        _, _, _, _, _, coarse_indices = model(example_graph, num_output_sentences = num_output_sentences)
+    _, _, _, _, _, coarse_indices = model(example_graph, num_output_sentences=num_output_sentences)
+    print(coarse_indices)
     # should be a 1D tensor of indices
-    coarse_indices = coarse_indices[0]
+    if isinstance(coarse_indices, list):
+        coarse_indices = coarse_indices[0]
     predicted_summary, sentence_indices = get_coarse_sentences(ground_truth, coarse_indices)
+    print("predicted summary")
+    print(predicted_summary)
     
     return predicted_summary, sentence_indices
 
@@ -214,8 +219,7 @@ if __name__ == "__main__":
     # get a random baseline 
     # run valuation on a saved model
     graph_constructor = CNNDailyMailGraphConstructor()
-    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False)
-    print("Random evaluation baseline")
+    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="train", perform_processing=False)
     perform_random_rouge_baseline(validation_dataset)
     print("Evaluate existing model")
     # deserialize a model
