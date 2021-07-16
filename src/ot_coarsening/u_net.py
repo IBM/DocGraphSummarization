@@ -1,10 +1,10 @@
 from typing import Union, Optional, Callable
 import torch
 import torch.nn.functional as F
-from torch.nn import Parameter
+from torch.nn import Parameter, ReLU, LeakyReLU
 from torch_sparse import spspmm
 from torch_scatter import scatter_add, scatter_max
-from torch_geometric.nn import GCNConv, GATConv
+from torch_geometric.nn import GCNConv, GATConv, Sequential
 from torch_geometric.nn.conv import FastRGCNConv, RGCNConv
 from torch_geometric.utils import (add_self_loops, sort_edge_index,
                                    remove_self_loops, softmax)
@@ -111,22 +111,27 @@ class TopKPooling(torch.nn.Module):
     """
     def __init__(self, in_channels: int, ratio: Union[int, float] = 0.5,
                  min_score: Optional[float] = None, multiplier: float = 1.,
-                 nonlinearity: Callable = torch.tanh):
+                 nonlinearity: Callable = torch.tanh, hidden=512):
         super(TopKPooling, self).__init__()
-
         self.in_channels = in_channels
         self.ratio = ratio
         self.min_score = min_score
         self.multiplier = multiplier
         self.nonlinearity = nonlinearity
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        self.weight = Parameter(torch.Tensor(1, in_channels))
+        self.hidden = hidden 
+        self.model = Sequential("x, edge_index, edge_weight", [
+            #(GCNConv(self.in_channels, self.hidden), "x, edge_index, edge_weight -> x"),
+            #ReLU(inplace=True),
+            (GCNConv(self.in_channels, self.hidden), "x, edge_index, edge_weight -> x"),
+            LeakyReLU(inplace=True),
+            (GCNConv(self.hidden, 1), "x, edge_index, edge_weight -> x"),
+        ])
 
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.weight.data = torch.rand(1, self.in_channels, device=self.device)
+        pass
 
     def __repr__(self):
         return '{}({}, {}={}, multiplier={})'.format(
@@ -140,48 +145,41 @@ class TopKPooling(torch.nn.Module):
         if batch is None:
             batch = edge_index.new_zeros(x.size(0))
 
-        attn = x if attn is None else attn
-        attn = attn.unsqueeze(-1) if attn.dim() == 1 else attn
-        score = (attn * self.weight).sum(dim=-1)
-
-        if self.min_score is None:
-            score = self.nonlinearity(score / self.weight.norm(p=2, dim=-1))
-        else:
-            score = softmax(score, batch)
+        #attn = x if attn is None else attn
+        #attn = attn.unsqueeze(-1) if attn.dim() == 1 else attn
+        #score = (attn * self.weight).sum(dim=-1)
+        edge_weight = edge_attr.squeeze()
+        score = self.model(x, edge_index, edge_weight).squeeze()
+        score = torch.nan_to_num(score)
+        #score = softmax(score, batch)
         # get seperate permutation for sentences and the rest (word and document nodes)
-        print("score requires grad")
-        print(score.requires_grad)
         num_nodes = scatter_add(batch.new_ones(x.size(0)), batch, dim=0).to(x.device)
         num_sentence_nodes = num_sentences.to(x.device) # the number of sentence nodes in each batch graph 
         cumulative_num_nodes  = torch.cat(
                 [num_nodes.new_zeros(1),
                 num_nodes.cumsum(dim=0)[:-1]]
             , dim=0).to(x.device)
-        print(cumulative_num_nodes.requires_grad)
         batch_size = num_nodes.size(0)
         # get the sentence perm
         sentence_indices = [torch.arange(num_sentence_nodes[i], device=x.device) + cumulative_num_nodes[i] for i in range(batch_size)]
         sentence_indices = torch.cat(sentence_indices).long()
-        print("sentence indices req")
-        print(sentence_indices.requires_grad)
         sentence_scores = score[sentence_indices]
         sentence_batch = [torch.ones(num_sentence_nodes[i]) * i for i in range(len(num_sentence_nodes))]
         sentence_batch = torch.cat(sentence_batch).long().to(x.device)
-        print("sentence batch requires grad")
-        print(sentence_batch.requires_grad)
-        print("sentence scores requires grad")
-        print(sentence_scores.requires_grad) 
         sentence_perm = topk(sentence_scores, sentence_indices, self.ratio, sentence_batch, self.min_score, num_output_sentences=num_output_sentences)
         # get the other perm
         num_other_nodes = num_nodes - num_sentence_nodes
-        other_indices = [torch.arange(num_other_nodes[i], device=x.device) + cumulative_num_nodes[i] + num_sentence_nodes[i] for i in range(batch_size)]
-        other_indices = torch.cat(other_indices).long().to(x.device)
-        other_scores = score[other_indices]
-        other_batch = [torch.ones(num_other_nodes[i]) * i for i in range(len(num_other_nodes))]
-        other_batch = torch.cat(other_batch).long().to(x.device)
-        other_perm = topk(other_scores, other_indices, self.ratio, other_batch, self.min_score)
-        # combine the other and sentence perms
-        perm = torch.cat((sentence_perm, other_perm)) 
+        if num_other_nodes.sum() > 0:
+            other_indices = [torch.arange(num_other_nodes[i], device=x.device) + cumulative_num_nodes[i] + num_sentence_nodes[i] for i in range(batch_size)]
+            other_indices = torch.cat(other_indices).long().to(x.device)
+            other_scores = score[other_indices]
+            other_batch = [torch.ones(num_other_nodes[i]) * i for i in range(len(num_other_nodes))]
+            other_batch = torch.cat(other_batch).long().to(x.device)
+            other_perm = topk(other_scores, other_indices, self.ratio, other_batch, self.min_score)
+            # combine the other and sentence perms
+            perm = torch.cat((sentence_perm, other_perm)) 
+        else:
+            perm = sentence_perm
         # process the batch
         x = x[perm] * score[perm].view(-1, 1)
         x = self.multiplier * x if self.multiplier != 1 else x
@@ -190,9 +188,7 @@ class TopKPooling(torch.nn.Module):
         edge_index, edge_attr = filter_adj(edge_index, edge_attr, perm,
                                            num_nodes=score.size(0))
 
-        print(perm.requires_grad)
-
-        return x, edge_index, edge_attr, batch, perm, score[perm]
+        return x, edge_index, edge_attr, batch, perm, score[perm], sentence_scores, sentence_batch
 
 class GraphUNetCoarsening(torch.nn.Module):
     r"""The Graph U-Net model from the `"Graph U-Nets"
@@ -274,16 +270,16 @@ class GraphUNetCoarsening(torch.nn.Module):
     """
         Computes the supervised loss
     """
-    def compute_supervised_loss(self, data, coarse_indices, batch):
-        max_summary_length = 10
+    def compute_supervised_loss(self, data, sentence_scores, sentence_batch):
+        max_label_length = 10
         num_sentences = data.num_sentences
-        y = data.y
-        y = torch.reshape(y, (-1, max_summary_length))
-        onehot_y = convert_y_to_onehot(y, num_sentences)
-        batch_size = batch.max() + 1
+        y_all = data.y
+        y_all = torch.reshape(y_all, (-1, max_label_length))
+        batch_size = sentence_batch.max() + 1
         # go through each element
-        cumulative_loss = 0.0
+        loss = 0.0
         for index in range(batch_size):
+            """    
             label_onehot = onehot_y[index]
             current_coarse = coarse_indices[torch.nonzero(batch == index)].squeeze()
             current_num_sentences = [num_sentences[index].int()]
@@ -293,16 +289,30 @@ class GraphUNetCoarsening(torch.nn.Module):
             # compute the supervised loss
             current_loss = self.supervised_loss(onehot_predicted[None, :], label_onehot[None, :])
             cumulative_loss += current_loss
-
-        mean_loss = cumulative_loss / batch_size
-
+            """
+            # compute output onehot vector
+            current_indices = torch.nonzero(sentence_batch == index)
+            scores = sentence_scores[current_indices].squeeze()
+            output_onehot = torch.sigmoid(scores)
+            # convert label to a onehot vector
+            y = y_all[index]
+            label_indices = y[torch.nonzero(y > 0)].long().squeeze()
+            if len(label_indices.shape) == 0:
+                label_indices = label_indices[None]
+            current_num_sentences = num_sentences[index]
+            label_onehot = torch.zeros(current_num_sentences).to(data.x.device).float()
+            label_onehot[label_indices] = 1.0
+            # compute the loss
+            loss += self.supervised_loss(output_onehot, label_onehot)
+ 
+        mean_loss = loss / batch_size
         return mean_loss
 
     """
         Computes a basic MSE between an input graph and a 
         reconstructed graph. 
     """
-    def compute_loss(self, original_x, reconstructed_x, num_sentences=None, sentence_only=False, batch=None):
+    def compute_unsupervised_loss(self, original_x, reconstructed_x, num_sentences=None, sentence_only=False, batch=None):
         if not num_sentences is None and sentence_only:
             x = original_x
             # computes the loss solely based on the sentence nodes
@@ -324,6 +334,45 @@ class GraphUNetCoarsening(torch.nn.Module):
             loss = self.loss(original_x, reconstructed_x)
         return loss
 
+    """
+        def forward(self, input_graph, num_output_sentences=3):
+            # unpack input
+            data_list = input_graph.to_data_list()
+            loss = 0.0
+            coarse_indices = []
+            for data in data_list:
+                x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
+                edge_weight = edge_attr.squeeze().float()
+                num_sentences = data.num_sentences
+                y = data.y
+                # run the layers
+                x = self.layer_one(x, edge_index, edge_weight)
+                output_attention = self.layer_two(x, edge_index, edge_weight).squeeze()
+                assert output_attention.shape[0] == x.shape[0]
+                # convert the attention to a onehot vector
+                sentence_attention = output_attention[0:num_sentences]
+                # get topk
+                num_output_nodes = torch.nonzero(y >= 0).shape[0]
+                if num_output_nodes == 0:
+                    num_output_nodes = 1
+                topk_values, topk_indices = torch.topk(sentence_attention, num_output_nodes)
+                cutoff = topk_values[-1]
+                # get all coarse indices
+                all_topk_values, all_topk_indices = torch.topk(output_attention, x.shape[0])
+                coarse_inds = all_topk_indices[torch.nonzero(all_topk_values >= cutoff).squeeze()]
+                coarse_indices.append(coarse_inds)
+                # compute output 
+                output_onehot = torch.sigmoid(sentence_attention)
+                # convert label to a onehot vector
+                label_indices = y[torch.nonzero(y > 0)].long().squeeze()
+                if len(label_indices.shape) == 0:
+                    label_indices = label_indices[None]
+                label_onehot = torch.zeros(num_sentences).to(device).float()
+                label_onehot[label_indices] = 1.0
+                # compute the loss
+                loss += self.supervised_loss(output_onehot, label_onehot)
+    """         
+ 
     """
         Performs forward pass 
     """
@@ -352,19 +401,17 @@ class GraphUNetCoarsening(torch.nn.Module):
             edge_index, edge_weight = self.augment_adj(edge_index, edge_weight,
                                                        x.size(0))
             is_last_layer = not i < self.depth
-            x, edge_index, edge_weight, batch, perm, _ = self.pools[i - 1](
-                                                             x,
-                                                             edge_index,
-                                                             edge_attr=edge_weight, 
-                                                             num_sentences=num_sentences, 
-                                                             num_output_sentences=num_output_sentences, 
-                                                             batch=batch,
-                                                             is_last_layer=is_last_layer)
+            x, edge_index, edge_weight, batch, perm, perm_scores, sentence_scores, sentence_batch = self.pools[i - 1](
+                                                                     x,
+                                                                     edge_index,
+                                                                     edge_attr=edge_weight, 
+                                                                     num_sentences=num_sentences, 
+                                                                     num_output_sentences=num_output_sentences, 
+                                                                     batch=batch,
+                                                                     is_last_layer=is_last_layer)
 
             x = self.down_convs[i](x, edge_index)
             x = self.activation(x)
-            print("perm requires grad")
-            print(perm.requires_grad)
             if i < self.depth:
                 xs += [x]
                 edge_indices += [edge_index]
@@ -392,11 +439,11 @@ class GraphUNetCoarsening(torch.nn.Module):
         
         # compute the loss
         reconstructed_x = x
+        supervised_loss = self.compute_supervised_loss(data, sentence_scores, sentence_batch)
+        unsupervised_loss = self.compute_unsupervised_loss(original_x, reconstructed_x, num_sentences=num_sentences, batch=original_batch)
         if self.supervised:
-            loss = self.compute_supervised_loss(data, coarsened_indices, last_batch)
+            loss = supervised_loss
         else:
-            loss = self.compute_loss(original_x, reconstructed_x, num_sentences=num_sentences, batch=original_batch)
-        # figure out the coarsened indices
-        S = None
-        return x, edge_index, edge_attr, S, loss, coarsened_indices
+            loss = unsupervised_loss
 
+        return supervised_loss, unsupervised_loss, loss, coarsened_indices

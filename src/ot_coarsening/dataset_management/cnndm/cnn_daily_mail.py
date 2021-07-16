@@ -42,12 +42,13 @@ def file_len(fname):
     - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
 """
 class CNNDailyMail(InMemoryDataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=1.0, max_number_of_nodes=1000, reduce_dimensionality=False, dense=False):
+    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=(0.0, 1.0), max_number_of_nodes=1000, reduce_dimensionality=False, dense=False):
         self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
         self.dimensionality = 768
         self.dense = dense
+        self.similarity = graph_constructor.similarity
         self.num_output_sentences = 3
         self.reduce_dimensionality = reduce_dimensionality
         if self.reduce_dimensionality:
@@ -55,6 +56,14 @@ class CNNDailyMail(InMemoryDataset):
             self.dimensionality_reducer.load()
             self.dimensionality = self.dimensionality_reducer.reduced_size
         self.proportion_of_dataset = proportion_of_dataset
+        # make start and end indices
+        start_proportion, end_proportion = self.proportion_of_dataset
+        if not self.similarity:
+            dataset_length = len(os.listdir(os.path.join(self.root, "processed", self.mode)))
+        else:
+            dataset_length = len(os.listdir(os.path.join(self.root, "processed_similarity", self.mode)))
+        self.start_index = int(dataset_length * start_proportion)
+        self.end_index = int(dataset_length * end_proportion)
         self.perform_processing = perform_processing
         self.max_number_of_nodes = max_number_of_nodes
         self.max_summary_length = 10
@@ -92,17 +101,11 @@ class CNNDailyMail(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return os.listdir(os.path.join(self.root, "processed", self.mode)) # ['processed/train.pt']
-        """
-                if self.mode == "train":
-                    return os.listdir(os.path.join(self.root, self.mode)) # ['processed/train.pt']
-                elif self.mode == "test":
-                    return ['processed/test.pt']
-                elif self.mode == "val":
-                    return ['processed/val.pt']
-                else:
-                    raise Exception("Unrecognized mode: {}".format(self.mode))
-        """
+        if not self.similarity:
+            return os.listdir(os.path.join(self.root, "processed", self.mode)) # ['processed/train.pt']
+        else:
+            return os.listdir(os.path.join(self.root, "processed_similarity", self.mode)) # ['processed/train.pt']
+
     def download(self):
         # do nothing becuase the dataset is downloaded
         pass
@@ -116,29 +119,33 @@ class CNNDailyMail(InMemoryDataset):
         return self.graph_constructor.construct_graph(tfidf, label)
 
     def len(self):
-        return int(len(os.listdir(os.path.join(self.root, "processed", self.mode))) * self.proportion_of_dataset)
+        return self.end_index - self.start_index
 
     """
         Reads the given raw files into json data objects
     """
     def _read_raw_files_to_data(self, tfidf_file, label_file, vocab):
         print("Reading raw files to data ...")
-        stopping_index = file_len(os.path.join(self.root, tfidf_file)) * self.proportion_of_dataset
         current_index = 0
+        stopping_index = file_len(os.path.join(self.root, tfidf_file)) * self.proportion_of_dataset[1]
         with jsonlines.open(os.path.join(self.root, tfidf_file)) as tfidf_reader:
             with jsonlines.open(os.path.join(self.root, label_file)) as label_reader:
                 for index, tfidf in enumerate(tqdm(tfidf_reader)):
                     try: 
+                        print("loaded")
                         # read label
                         label = label_reader.read()
                         # check if file exists
-                        save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
+                        if not self.similarity:
+                            save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
+                        else:
+                            save_path = os.path.join(self.root, "processed_similarity", self.mode, "data_{}.pt".format(index))
+
                         if not self.perform_processing and os.path.exists(save_path):
                             current_index += 1
                             continue
                         # num sentences
                         # check number of nodes
-                        # get_memory_usage()
                         graph = self._construct_graph(tfidf, label)
                         if graph is None:
                             continue
@@ -230,11 +237,16 @@ class CNNDailyMail(InMemoryDataset):
         return graph
     
     def get(self, idx):
-        data_dir = os.path.join(self.root, "processed", self.mode)
-        graph_data_path = os.path.join(data_dir, "data_{}.pt".format(idx))
+        # process the
+        processed_index = self.start_index + idx 
+        if not self.similarity:
+            data_dir = os.path.join(self.root, "processed", self.mode)
+        else:
+            data_dir = os.path.join(self.root, "processed_similarity", self.mode)
+        graph_data_path = os.path.join(data_dir, "data_{}.pt".format(processed_index))
         # check if path exists
         if not os.path.exists(graph_data_path):
-            return self.get((idx - 1) % self.len())
+            return self.get((processed_index - 1) % self.len())
         graph = torch.load(graph_data_path)
         graph = graph.to(device)
 
@@ -242,10 +254,14 @@ class CNNDailyMail(InMemoryDataset):
             graph = T.ToDense(self.max_number_of_nodes)(graph)
             graph.adj = graph.adj.squeeze().float()
             graph = self.reshape_graph(graph)
+            num_to_pad = self.max_summary_length - graph.y.shape[1]
+        else:
+            num_to_pad = self.max_summary_length - graph.y.shape[0]
         # Reduce embedding dimensionality
         if self.reduce_dimensionality:
             graph = self._reduce_embedding_dimensionality(graph, pretrained=True)
-        num_to_pad = self.max_summary_length - graph.y.shape[0]
+        if self.similarity:
+            graph.edge_attr += 1
         graph.y = F.pad(input=graph.y, pad=(0, num_to_pad), mode='constant', value=-1)
         return graph
 

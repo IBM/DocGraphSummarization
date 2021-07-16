@@ -31,7 +31,7 @@ def convert_y_to_onehot(y, num_sentences):
 class CoarsenBlock(torch.nn.Module):
     def __init__(self, in_channels, assign_ratio, max_number_of_nodes=1000):
         super(CoarsenBlock, self).__init__()
-        self.gcn_att = RGCNConv(in_channels, 1, num_relations=1)
+        self.gcn_att = GCNConv(in_channels, 1)
         self.assign_ratio = assign_ratio
         self.max_number_of_nodes = max_number_of_nodes
 
@@ -131,7 +131,6 @@ class CoarsenBlock(torch.nn.Module):
         cut_value = 0
         # This is in the evaluation phase
         temptopk, topk_ind = self.get_topk_range_for_sentences(alpha_vec, num_output_sentences, num_sentences)
-        print(topk_ind.requires_grad)
         cut_value = temptopk[-1]
         # calculate S
         cut_alpha_vec = torch.relu(alpha_vec + 0.0000001 - cut_value)
@@ -192,9 +191,9 @@ class Coarsening(torch.nn.Module):
         self.embedding_compression = embedding_compression
         #self.compressed_dimensionality = dataset.num_features // 5
         #self.compression = Linear(dataset.num_features, self.compressed_dimensionality)
-        self.embed_block1 = RGCNConv(dataset.dimensionality, hidden, num_relations=1)
+        self.embed_block1 = GCNConv(dataset.dimensionality, hidden)
         self.coarse_block1 = CoarsenBlock(hidden, ratio)
-        self.embed_block2 = RGCNConv(hidden, dataset.dimensionality, num_relations=1)
+        self.embed_block2 = GCNConv(hidden, dataset.dimensionality)
         #self.uncompress = Linear(self.compressed_dimensionality, dataset.num_features)
         self.supervised_loss = BCELoss()
 
@@ -219,8 +218,6 @@ class Coarsening(torch.nn.Module):
             index_mask = index_masks[index].int()
             sentence_mask = torch.zeros(num_sentences[index], requires_grad=True).to(data.x.device)
             onehot_predicted = index_mask[0:num_sentences[index]] * sentence_mask
-            print("predicted requies grad")
-            print(onehot_predicted.requires_grad)
             # compute the supervised loss
             current_loss = self.supervised_loss(onehot_predicted[None, :], label_onehot[None, :])
             cumulative_loss += current_loss

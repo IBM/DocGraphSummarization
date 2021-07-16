@@ -77,7 +77,7 @@ def remove_punctuation(embeddings, tokens):
     Returns two outputs a list of words and a list of embeddings 
     corresponding to each word. This includes duplicates of words
 """
-def compute_bert_word_embeddings_token_pairs(bert_model, bert_tokenizer, sentences, unique_words, word_embedding_size, layers=[-1, -2, -3, -4], longformer=False):
+def compute_bert_word_embeddings_token_pairs(bert_model, bert_tokenizer, sentences, unique_words, word_embedding_size, layers=[-1, -2, -3, -4], longformer=True):
     if longformer: 
         # merge all sentences into one
         single_sentence = " ".join(sentences)
@@ -172,11 +172,13 @@ class GraphConstructor():
 """
 class CNNDailyMailGraphConstructor():
 
-    def __init__(self):
+    def __init__(self, similarity=False):
         self.bert_model = LongformerModel.from_pretrained('allenai/longformer-base-4096')
         self.bert_tokenizer = LongformerTokenizerFast.from_pretrained('allenai/longformer-base-4096')
         self.sentence_transformer = SentenceTransformer('paraphrase-distilroberta-base-v1')
         self.word_embedding_size = self.bert_model.config.hidden_size
+        self.similarity = similarity
+        self.cosine_similarity = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
 
     def _get_unique_words(self, tfidf):
         unique_words = set()
@@ -241,24 +243,58 @@ class CNNDailyMailGraphConstructor():
         edge_attr = torch.FloatTensor(edge_attr).unsqueeze(-1)
         return edge_index, edge_attr
 
+    def _make_similarity_graph_edges(self, sentence_to_node_index, sentence_embeddings):
+        # edge_attr is the tfidf features
+        edge_attr = []
+        # edge_index is of shape (2, num_edges) in COO format
+        edge_index = []
+        # Undirected edges have two edges for each direction
+        for sentence_index in sentence_to_node_index.keys():
+            sentence_node_index = sentence_to_node_index[sentence_index]
+            for other_sentence_index in sentence_to_node_index.keys():
+                if other_sentence_index == sentence_index:
+                    continue
+                other_sentence_node_index = sentence_to_node_index[other_sentence_index]
+                # make an edge between the two sentences
+                edge = [sentence_node_index, other_sentence_node_index]
+                edge_index.append(edge)
+                # calculate the cosine similarity
+                sentence_one_embedding = sentence_embeddings[sentence_node_index]
+                sentence_two_embedding = sentence_embeddings[other_sentence_node_index]
+                cosine_similarity = self.cosine_similarity(sentence_one_embedding, sentence_two_embedding)
+                edge_attr.append(cosine_similarity)
+                print("cosine similarity shape")
+                print(cosine_similarity.shape)
+        # convert to numpy
+        edge_index = torch.LongTensor(edge_index).T
+        edge_attr = torch.FloatTensor(edge_attr).unsqueeze(-1)
+        return edge_index, edge_attr
+
     """
         Make node attributes from word embeddings and sentence embeddings
     """
     def _make_nodes(self, word_embeddings, sentence_embeddings):
-        word_embedding_values = torch.stack(list(word_embeddings.values()))
-        word_embedding_values = word_embedding_values.to(device)
-        word_embedding_keys = list(word_embeddings.keys())
-        num_words = len(word_embedding_keys)
         num_sentences = np.shape(sentence_embeddings)[0]
-        # make sure word and sentence embeddings have the same shape
-        assert np.shape(word_embedding_values)[-1] == np.shape(sentence_embeddings)[-1]
         # sentences are first then words
-        attribute_matrix = torch.cat((sentence_embeddings, word_embedding_values), dim=0)
-        # output is of shape (num_nodes, num_node_features)
-        # make sentence to index map
-        sentence_to_node_index = {str(i): i for i in range(num_sentences)}
-        # make word to node index map
-        word_to_node_index = {word_embedding_keys[i]: i + num_sentences for i in range(num_words)}
+        if not self.similarity:
+            # make sure word and sentence embeddings have the same shape
+            assert np.shape(word_embedding_values)[-1] == np.shape(sentence_embeddings)[-1]
+            word_embedding_values = torch.stack(list(word_embeddings.values()))
+            word_embedding_values = word_embedding_values.to(device)
+            word_embedding_keys = list(word_embeddings.keys())
+            num_words = len(word_embedding_keys)
+            attribute_matrix = torch.cat((sentence_embeddings, word_embedding_values), dim=0)
+            # output is of shape (num_nodes, num_node_features)
+            # make sentence to index map
+            sentence_to_node_index = {str(i): i for i in range(num_sentences)}
+            # make word to node index map
+            word_to_node_index = {word_embedding_keys[i]: i + num_sentences for i in range(num_words)}
+        else:
+            # similarity graph
+            attribute_matrix = sentence_embeddings
+            # make sentence to index map
+            sentence_to_node_index = {str(i): i for i in range(num_sentences)}
+            word_to_node_index = None
 
         return attribute_matrix, word_to_node_index, sentence_to_node_index
 
@@ -278,7 +314,7 @@ class CNNDailyMailGraphConstructor():
 
     def construct_graph(self, tfidf, label):
         # sanity check
-        self._check_word_exists(tfidf, label)
+        #self._check_word_exists(tfidf, label)
         # label has the shape
         # {
         #    "text": [],
@@ -296,16 +332,23 @@ class CNNDailyMailGraphConstructor():
         # Filter stop words
         filtered_unique_words = self._filter_stop_words(unique_words)
         # Get a word embededing for each instance of a word (dictionary word:embedding)
-        word_embeddings = self._get_mean_word_embeddings(label["text"], filtered_unique_words)
+        if not self.similarity:
+            word_embeddings = self._get_mean_word_embeddings(label["text"], filtered_unique_words)
+        else:
+            word_embeddings = None
         # Make a list of sentence embeddings (num_sentences, embedding_size)
         sentence_embeddings = compute_bert_sentence_embedding(label["text"], self.sentence_transformer)
         # Make node attributes
         node_attributes, word_to_node_index, sentence_to_node_index = self._make_nodes(word_embeddings, sentence_embeddings)
         # Make edges
-        edge_index, edge_attributes = self._make_edges(word_to_node_index,
-                                                       sentence_to_node_index,
-                                                       tfidf,
-                                                       filtered_unique_words)
+        if not self.similarity:
+            edge_index, edge_attributes = self._make_edges(word_to_node_index,
+                                                           sentence_to_node_index,
+                                                           tfidf,
+                                                           filtered_unique_words)
+        else:
+            # make similarity graph edges
+            edge_index, edge_attributes = self._make_similarity_graph_edges(sentence_to_node_index, sentence_embeddings)
         # get labels
         labels = torch.Tensor(label["label"])
         # filter invalid graphs

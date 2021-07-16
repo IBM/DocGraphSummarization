@@ -13,6 +13,7 @@ import sys
 sys.path.append(os.environ["GRAPH_SUM"])
 from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
 from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
+from src.ot_coarsening.u_net import GraphUNetCoarsening
 import collections
 import wandb
 
@@ -72,10 +73,6 @@ def get_coarse_sentences(ground_truth, coarse_indices):
     coarse_indices = coarse_indices.cpu().numpy()
     num_sentences = len(ground_truth["text"]) 
     sentence_indices = np.where(coarse_indices < num_sentences)[0].squeeze()
-    print("coarse indices")
-    print(coarse_indices)
-    print("sentence indices")
-    print(sentence_indices)
     sentence_indices = coarse_indices[sentence_indices]
     if len(np.shape(sentence_indices)) == 0:
         sentence_indices = [sentence_indices]
@@ -84,29 +81,25 @@ def get_coarse_sentences(ground_truth, coarse_indices):
     coarse_sentences = [text[sentence_index] for sentence_index in sentence_indices]
     return coarse_sentences, sentence_indices
 
+"""
+    Generates a textual summmary of the example_graph using
+    the given model.
+"""
 def generate_predicted_summary(model, example_graph, ground_truth, num_output_sentences, dense=False):
-    """
-        Generates a textual summmary of the example_graph using
-        the given model.
-    """
     # put model in eval mode
     model.eval()
     # run forward pass using model
     num_sentences = len(ground_truth["text"])
     example_graph.to(device)
     example_graph = Batch.from_data_list([example_graph])
-    #example_graph.x = example_graph.x.unsqueeze(0)  
-    #example_graph.y = example_graph.y.unsqueeze(0) 
-    #example_graph.mask = example_graph.mask.unsqueeze(0)
-    #example_graph.adj = example_graph.adj.unsqueeze(0)
-    _, _, _, _, _, coarse_indices = model(example_graph, num_output_sentences=num_output_sentences)
-    print(coarse_indices)
+    if isinstance(model, GraphUNetCoarsening):
+       supervised_loss, unsupervised_loss, loss, coarse_indices = model(example_graph, num_output_sentences=num_output_sentences)
+    else:
+        _, _, _, _, _, coarse_indices = model(example_graph, num_output_sentences=num_output_sentences)
     # should be a 1D tensor of indices
     if isinstance(coarse_indices, list):
         coarse_indices = coarse_indices[0]
     predicted_summary, sentence_indices = get_coarse_sentences(ground_truth, coarse_indices)
-    print("predicted summary")
-    print(predicted_summary)
     
     return predicted_summary, sentence_indices
 
