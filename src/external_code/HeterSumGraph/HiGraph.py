@@ -227,7 +227,6 @@ class HSumDocGraph(HSumGraph):
         result = self.wh(s_state)
         return result
 
-
     def set_dnfeature(self, graph):
         """ init doc node by mean pooling on the its sent node (connected by the edges with type=1) """
         dnode_id = graph.filter_nodes(lambda nodes: nodes.data["dtype"] == 2)
@@ -242,7 +241,6 @@ class HSumDocGraph(HSumGraph):
                 snid2dnid[int(s)] = dnode
         node_feature = torch.stack(node_feature_list)
         return node_feature, snid2dnid
-
 
 def get_snode_feat(G, feat):
     glist = dgl.unbatch(G)

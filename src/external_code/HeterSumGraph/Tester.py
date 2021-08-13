@@ -78,12 +78,13 @@ class TestPipLine():
 
     
 class SLTester(TestPipLine):
-    def __init__(self, model, m, test_dir=None, limited=False, blocking_win=3):
+    def __init__(self, model, m, test_dir=None, limited=False, blocking_win=3, loss_type="not ranking"):
         super().__init__(model, m, test_dir, limited)
         self.pred, self.true, self.match, self.match_true = 0, 0, 0, 0
         self._F = 0
         self.criterion = torch.nn.CrossEntropyLoss(reduction='none')
         self.blocking_win = blocking_win
+        self.loss_type = loss_type
 
     def evaluation(self, G, index, dataset, blocking=False):
         """
@@ -97,7 +98,10 @@ class SLTester(TestPipLine):
         # logger.debug(outputs)
         snode_id = G.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)
         label = G.ndata["label"][snode_id].sum(-1)            # [n_nodes]
-        G.nodes[snode_id].data["loss"] = self.criterion(outputs, label).unsqueeze(-1)    # [n_nodes, 1]
+        if self.loss_type == "not ranking":
+            G.nodes[snode_id].data["loss"] = criterion(outputs, label).unsqueeze(-1)  # [n_nodes, 1]
+        else:
+            G.nodes[snode_id].data["loss"] = criterion(outputs, G).unsqueeze(-1)  # [n_nodes, 1]
         loss = dgl.sum_nodes(G, "loss")    # [batch_size, 1]
         loss = loss.mean()
         self.running_loss += float(loss.data)

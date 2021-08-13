@@ -3,7 +3,7 @@ import wandb
 import sys
 sys.path.append(os.environ["GRAPH_SUM"])
 from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
-from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
+from src.ot_coarsening.dataset_management.cnndm.graph_constructor import CNNDailyMailGraphConstructor
 from src.ot_coarsening.ot_coarsening import MultiLayerCoarsening, Coarsening
 from src.ot_coarsening.u_net import GraphUNetCoarsening
 from src.ot_coarsening.ot_coarsening_dense import Coarsening as DenseCoarsening

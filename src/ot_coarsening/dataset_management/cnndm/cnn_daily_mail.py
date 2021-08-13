@@ -42,15 +42,17 @@ def file_len(fname):
     - I am doing an in memory dataset (the train is 5GB), but it loads into CPU memory so that should be fine. I may need to change that later
 """
 class CNNDailyMail(InMemoryDataset):
-    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=(0.0, 1.0), max_number_of_nodes=1000, reduce_dimensionality=False, dense=False):
+    def __init__(self, transform=None, pre_transform=None, mode="train", graph_constructor=None, perform_processing=False, proportion_of_dataset=(0.0, 1.0), max_number_of_nodes=1000, reduce_dimensionality=False, dense=False, highlights=False, overwrite_existing=True):
         self.root = "/dccstor/helbling1/data/CNNDM"
         self.mode = mode # "trian", "test", or "val"
         self.graph_constructor = graph_constructor
         self.dimensionality = 768
         self.dense = dense
+        self.highlights = highlights
         self.similarity = graph_constructor.similarity
         self.num_output_sentences = 3
         self.reduce_dimensionality = reduce_dimensionality
+        self.overwrite_existing = overwrite_existing
         if self.reduce_dimensionality:
             self.dimensionality_reducer = PCADimensionalityReducer()
             self.dimensionality_reducer.load()
@@ -58,8 +60,10 @@ class CNNDailyMail(InMemoryDataset):
         self.proportion_of_dataset = proportion_of_dataset
         # make start and end indices
         start_proportion, end_proportion = self.proportion_of_dataset
-        if not self.similarity:
+        if not self.similarity and not self.highlights:
             dataset_length = len(os.listdir(os.path.join(self.root, "processed", self.mode)))
+        elif not self.similarity and self.highlights:
+            dataset_length = len(os.listdir(os.path.join(self.root, "highlight_processed", self.mode)))
         else:
             dataset_length = len(os.listdir(os.path.join(self.root, "processed_similarity", self.mode)))
         self.start_index = int(dataset_length * start_proportion)
@@ -74,23 +78,24 @@ class CNNDailyMail(InMemoryDataset):
     @property
     def raw_file_names(self):
         # files = [tfidfs, labels, vocab]
+        base_path = "unprocessed" if not self.highlights else "highlight_unprocessed"
         if self.mode == "train":
             return [
-                "unprocessed/train.w2s.tfidf.jsonl",
-                "unprocessed/train.label.jsonl",
-                "unprocessed/vocab",
+                base_path+"/train.w2s.tfidf.jsonl",
+                base_path+"/train.label.jsonl",
+                base_path+"/vocab",
             ]
         elif self.mode == "test":
             return [
-                "unprocessed/test.w2s.tfidf.jsonl",
-                "unprocessed/test.label.jsonl",
-                "unprocessed/vocab",
+                base_path+"/test.w2s.tfidf.jsonl",
+                base_path+"/test.label.jsonl",
+                base_path+"/vocab",
             ]
         elif self.mode == "val":
             return [
-                "unprocessed/val.w2s.tfidf.jsonl",
-                "unprocessed/val.label.jsonl",
-                "unprocessed/vocab",
+                base_path+"/val.w2s.tfidf.jsonl",
+                base_path+"/val.label.jsonl",
+                base_path+"/vocab",
             ]
         else:
             raise Exception("Unrecognized mode: {}".format(self.mode))
@@ -101,8 +106,10 @@ class CNNDailyMail(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        if not self.similarity:
+        if not self.similarity and not self.highlights:
             return os.listdir(os.path.join(self.root, "processed", self.mode)) # ['processed/train.pt']
+        elif not self.similarity and self.highlights:
+            return os.listdir(os.path.join(self.root, "highlight_processed", self.mode)) # ['processed/train.pt']
         else:
             return os.listdir(os.path.join(self.root, "processed_similarity", self.mode)) # ['processed/train.pt']
 
@@ -132,18 +139,22 @@ class CNNDailyMail(InMemoryDataset):
             with jsonlines.open(os.path.join(self.root, label_file)) as label_reader:
                 for index, tfidf in enumerate(tqdm(tfidf_reader)):
                     try: 
-                        print("loaded")
                         # read label
                         label = label_reader.read()
                         # check if file exists
-                        if not self.similarity:
+                        if not self.similarity and not self.highlights:
                             save_path = os.path.join(self.root, "processed", self.mode, "data_{}.pt".format(index))
+                        elif not self.similarity and self.highlights:
+                            save_path = os.path.join(self.root, "highlight_processed", self.mode, "data_{}.pt".format(index))
                         else:
                             save_path = os.path.join(self.root, "processed_similarity", self.mode, "data_{}.pt".format(index))
 
                         if not self.perform_processing and os.path.exists(save_path):
                             current_index += 1
                             continue
+                        if self.perform_processing and os.path.exists(save_path) and not self.overwrite_existing:
+                            current_index += 1
+                            continue 
                         # num sentences
                         # check number of nodes
                         graph = self._construct_graph(tfidf, label)
@@ -239,8 +250,10 @@ class CNNDailyMail(InMemoryDataset):
     def get(self, idx):
         # process the
         processed_index = self.start_index + idx 
-        if not self.similarity:
+        if not self.similarity and not self.highlights:
             data_dir = os.path.join(self.root, "processed", self.mode)
+        elif not self.similarity and self.highlights:
+            data_dir = os.path.join(self.root, "highlight_processed", self.mode)
         else:
             data_dir = os.path.join(self.root, "processed_similarity", self.mode)
         graph_data_path = os.path.join(data_dir, "data_{}.pt".format(processed_index))
@@ -248,8 +261,7 @@ class CNNDailyMail(InMemoryDataset):
         if not os.path.exists(graph_data_path):
             return self.get((processed_index - 1) % self.len())
         graph = torch.load(graph_data_path)
-        graph = graph.to(device)
-
+        
         if self.dense:
             graph = T.ToDense(self.max_number_of_nodes)(graph)
             graph.adj = graph.adj.squeeze().float()
@@ -263,5 +275,11 @@ class CNNDailyMail(InMemoryDataset):
         if self.similarity:
             graph.edge_attr += 1
         graph.y = F.pad(input=graph.y, pad=(0, num_to_pad), mode='constant', value=-1)
+        # check if rankings are not none
+        if hasattr(graph, "rankings") and not graph.rankings is None:
+            # pad the rankings
+            pad_length = 100
+            graph.rankings = torch.Tensor(graph.rankings)
+            # graph.rankings = F.pad(input=graph.rankings, pad=(0, pad_length), mode='constant', value=-1)
         return graph
 

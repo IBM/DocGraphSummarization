@@ -9,6 +9,13 @@ from torch_geometric.nn.conv import FastRGCNConv, RGCNConv
 from torch_geometric.utils import (add_self_loops, sort_edge_index,
                                    remove_self_loops, softmax)
 from torch_geometric.utils.repeat import repeat
+import random
+
+import sys
+import os
+sys.path.append(os.environ["GRAPH_SUM"])
+sys.path.append("/u/helbling/GraphSummarization/src/external_code/allRank/")
+import src.external_code.allRank.allrank.models.losses.neuralNDCG as neuralNDCG
 
 def topk(score, indices, ratio, batch, min_score=None, tol=1e-7, num_output_sentences=None):
     if indices is None:
@@ -23,21 +30,40 @@ def topk(score, indices, ratio, batch, min_score=None, tol=1e-7, num_output_sent
     cum_num_nodes = torch.cat(
         [num_nodes.new_zeros(1),
          num_nodes.cumsum(dim=0)[:-1]], dim=0)
-   
+    #print("batch")
+    #print(batch)
+    #print("num nodes")
+    #print(num_nodes)
+    #print("score shape")
+    #print(score.shape)
+    #print("indices shape")
+    #print(indices.shape)
+    #print("cum num nodes")
+    #print(cum_num_nodes)
+    assert cum_num_nodes.shape == num_nodes.shape
+    
     index  = torch.arange(batch.size(0), dtype=torch.long, device=score.device)
     index = (index - cum_num_nodes[batch]) + (batch * max_num_nodes)
 
     dense_x = score.new_full((batch_size * max_num_nodes, ),
                          torch.finfo(score.dtype).min)
+    #print("index")
+    #print(index)
+    #print("dense x shape")
+    #print(dense_x.shape)
     dense_x[index] = score
     dense_x = dense_x.view(batch_size, max_num_nodes)
-
     _, perm = dense_x.sort(dim=-1, descending=True)
-
+    #print(_)
+    #print(perm)
     perm = perm + cum_num_nodes.view(-1, 1)
     perm = perm.view(-1)
     if not num_output_sentences is None:
         k = torch.ones(batch_size) * num_output_sentences
+        k = k.to(score.device)
+        print(k.device)
+        print(num_nodes.device)
+        k = torch.min(k, num_nodes)
     elif isinstance(ratio, int):
         k = num_nodes.new_full((num_nodes.size(0), ), ratio)
         k = torch.min(k, num_nodes)
@@ -48,9 +74,15 @@ def topk(score, indices, ratio, batch, min_score=None, tol=1e-7, num_output_sent
         torch.arange(k[i], dtype=torch.long, device=score.device) +
         i * max_num_nodes for i in range(batch_size)
     ]
+
     mask = torch.cat(mask, dim=0)
     perm = perm[mask]
+    # filter indices to be in range
+    #in_range = torch.logical_and(perm >= 0, perm < indices.shape[0])
+    #perm = perm[torch.nonzero(perm >= 0)]
+    #perm = perm[torch.nonzero(perm < indices.shape[0])]
     indices_perm = indices[perm]
+
     return indices_perm
 
 def filter_adj(edge_index, edge_attr, perm, num_nodes=None):
@@ -111,22 +143,40 @@ class TopKPooling(torch.nn.Module):
     """
     def __init__(self, in_channels: int, ratio: Union[int, float] = 0.5,
                  min_score: Optional[float] = None, multiplier: float = 1.,
-                 nonlinearity: Callable = torch.tanh, hidden=512):
+                 nonlinearity: Callable = torch.tanh, hidden=1024, gat=False):
         super(TopKPooling, self).__init__()
         self.in_channels = in_channels
         self.ratio = ratio
         self.min_score = min_score
+        self.gat = gat
         self.multiplier = multiplier
         self.nonlinearity = nonlinearity
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.hidden = hidden 
-        self.model = Sequential("x, edge_index, edge_weight", [
-            #(GCNConv(self.in_channels, self.hidden), "x, edge_index, edge_weight -> x"),
-            #ReLU(inplace=True),
-            (GCNConv(self.in_channels, self.hidden), "x, edge_index, edge_weight -> x"),
-            LeakyReLU(inplace=True),
-            (GCNConv(self.hidden, 1), "x, edge_index, edge_weight -> x"),
-        ])
+        if not gat:
+            self.model = Sequential("x, edge_index, edge_weight", [
+                (GCNConv(self.in_channels, self.hidden), "x, edge_index, edge_weight -> x"),
+                LeakyReLU(inplace=True),
+                (GCNConv(self.hidden, self.hidden // 2), "x, edge_index, edge_weight -> x"),
+                LeakyReLU(inplace=True),
+                (GCNConv(self.hidden // 2, 1), "x, edge_index, edge_weight -> x"),
+                #LeakyReLU(inplace=True),
+                #(GCNConv(self.hidden // 4, 1), "x, edge_index, edge_weight -> x"),
+                LeakyReLU(inplace=True)
+            ])
+        else:
+            self.model = Sequential("x, edge_index", [
+                (GATConv(self.in_channels, self.hidden), "x, edge_index -> x"),
+                LeakyReLU(inplace=True),
+                (GATConv(self.hidden, self.hidden // 2), "x, edge_index -> x"),
+                LeakyReLU(inplace=True),
+                (GATConv(self.hidden // 2, 1), "x, edge_index -> x"),
+                #LeakyReLU(inplace=True),
+                #(GCNConv(self.hidden // 4, 1), "x, edge_index, edge_weight -> x"),
+                LeakyReLU(inplace=True)
+            ])
+
+        
 
         self.reset_parameters()
 
@@ -149,7 +199,10 @@ class TopKPooling(torch.nn.Module):
         #attn = attn.unsqueeze(-1) if attn.dim() == 1 else attn
         #score = (attn * self.weight).sum(dim=-1)
         edge_weight = edge_attr.squeeze()
-        score = self.model(x, edge_index, edge_weight).squeeze()
+        if not self.gat:
+            score = self.model(x, edge_index, edge_weight).squeeze()
+        else:
+            score = self.model(x, edge_index).squeeze()
         score = torch.nan_to_num(score)
         #score = softmax(score, batch)
         # get seperate permutation for sentences and the rest (word and document nodes)
@@ -209,7 +262,7 @@ class GraphUNetCoarsening(torch.nn.Module):
             (default: :obj:`torch.nn.functional.relu`)
     """
     def __init__(self, in_channels, hidden_channels, out_channels, depth,
-                 pool_ratios=0.5, sum_res=True, activation=F.relu, supervised=False):
+                 pool_ratios=0.5, sum_res=True, activation=F.relu, gat=False, embedding_mapping=False):
         super(GraphUNetCoarsening, self).__init__()
         assert depth >= 1
         self.in_channels = in_channels
@@ -217,29 +270,41 @@ class GraphUNetCoarsening(torch.nn.Module):
         self.out_channels = out_channels
         self.depth = depth
         self.pool_ratios = repeat(pool_ratios, depth)
-        self.supervised = supervised
         self.activation = activation
+        self.embedding_mapping = embedding_mapping
         self.sum_res = sum_res
         self.loss = torch.nn.MSELoss()
         self.supervised_loss = torch.nn.BCELoss()
-
+        self.triplet_loss = torch.nn.TripletMarginLoss()
         channels = hidden_channels
+        embedding_channels = 1024
+        # embedding function 
+        if self.embedding_mapping:
+            self.embedding_function = torch.nn.Linear(self.in_channels, embedding_channels) 
+            self.inverse_embedding_function = torch.nn.Linear(embedding_channels, out_channels)
+        else:
+            self.embedding_function = torch.nn.Identity()
+            self.inverse_embedding_function = torch.nn.Identity()
+            embedding_channels = in_channels
 
         self.down_convs = torch.nn.ModuleList()
         self.pools = torch.nn.ModuleList()
-        self.down_convs.append(GATConv(in_channels, channels, heads=1))
+        if gat:
+            base_module = GATConv
+        else:
+            base_module = GCNConv
+        self.down_convs.append(base_module(embedding_channels, channels))
         for i in range(depth):
-            self.pools.append(TopKPooling(channels, self.pool_ratios[i]))
-            self.down_convs.append(GATConv(channels, channels, heads=1))
+            self.pools.append(TopKPooling(channels, self.pool_ratios[i], gat=gat))
+            self.down_convs.append(base_module(channels, channels))
 
         in_channels = channels if sum_res else 2 * channels
 
         self.up_convs = torch.nn.ModuleList()
         for i in range(depth - 1):
-            self.up_convs.append(GATConv(in_channels, channels, heads=1))
-        self.up_convs.append(GATConv(in_channels, out_channels, heads=1))
+            self.up_convs.append(base_module(in_channels, channels))
+        self.up_convs.append(base_module(in_channels, embedding_channels))
         #self.output_conv = GCNConv(out_channels, out_channels)
-
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -266,6 +331,36 @@ class GraphUNetCoarsening(torch.nn.Module):
         return '{}({}, {}, {}, depth={}, pool_ratios={})'.format(
             self.__class__.__name__, self.in_channels, self.hidden_channels,
             self.out_channels, self.depth, self.pool_ratios)
+
+    """
+        Computes the supervised ranking loss
+    """
+    def compute_supervised_ranking_loss(self, data, sentence_scores, sentence_batch):
+        max_label_length = 10
+        num_sentences = data.num_sentences
+        y_all = data.y
+        y_all = torch.reshape(y_all, (-1, max_label_length))
+        batch_size = sentence_batch.max() + 1
+        # go through each element
+        loss = 0.0
+        for index in range(batch_size):
+            # compute output onehot vector
+            current_indices = torch.nonzero(sentence_batch == index)
+            scores = sentence_scores[current_indices].squeeze()
+            output_onehot = torch.sigmoid(scores)
+            # convert label to a onehot vector
+            y = y_all[index]
+            label_indices = y[torch.nonzero(y > 0)].long().squeeze()
+            if len(label_indices.shape) == 0:
+                label_indices = label_indices[None]
+            current_num_sentences = num_sentences[index]
+            label_onehot = torch.zeros(current_num_sentences).to(data.x.device).float()
+            label_onehot[label_indices] = 1.0
+            # compute the loss
+            loss += self.supervised_loss(output_onehot, label_onehot)
+ 
+        mean_loss = loss / batch_size
+        return mean_loss
         
     """
         Computes the supervised loss
@@ -279,21 +374,12 @@ class GraphUNetCoarsening(torch.nn.Module):
         # go through each element
         loss = 0.0
         for index in range(batch_size):
-            """    
-            label_onehot = onehot_y[index]
-            current_coarse = coarse_indices[torch.nonzero(batch == index)].squeeze()
-            current_num_sentences = [num_sentences[index].int()]
-            sentence_indices = torch.nonzero(current_coarse < current_num_sentences[0]).squeeze()
-            sentence_indices = current_coarse[sentence_indices][None, :]
-            onehot_predicted = convert_y_to_onehot(sentence_indices, torch.stack(current_num_sentences))[0]
-            # compute the supervised loss
-            current_loss = self.supervised_loss(onehot_predicted[None, :], label_onehot[None, :])
-            cumulative_loss += current_loss
-            """
             # compute output onehot vector
             current_indices = torch.nonzero(sentence_batch == index)
             scores = sentence_scores[current_indices].squeeze()
             output_onehot = torch.sigmoid(scores)
+            if len(output_onehot.shape) < 1:
+                output_onehot = output_onehot.unsqueeze(0)
             # convert label to a onehot vector
             y = y_all[index]
             label_indices = y[torch.nonzero(y > 0)].long().squeeze()
@@ -333,6 +419,80 @@ class GraphUNetCoarsening(torch.nn.Module):
         else:
             loss = self.loss(original_x, reconstructed_x)
         return loss
+
+    """
+        Computes the basic triplet loss of a given set of output scores on
+        a set of triplets constructed from the specific examples triplets
+    """
+    def compute_triplet_loss(self, sentence_scores, rankings, sentence_batch, batch, num_sentences, num_triplets=5, ndcg=True):
+        if ndcg:
+            return self.compute_neural_ndcg_loss(sentence_scores, rankings, sentence_batch, batch, num_sentences)
+        # generate a list of triplets from the rankings
+        triplets = []
+        batch_size = sentence_batch.max() + 1
+        total_triplet_loss = 0.0
+        for index in range(batch_size):
+            current_scores = sentence_scores[torch.nonzero(sentence_batch == index)]
+            current_rankings = rankings[torch.nonzero(sentence_batch == index)]
+            #current_rankings = current_rankings[0: current_rankings.shape[0]]
+            assert current_scores.shape == current_rankings.shape
+            num_scores = current_scores.shape[0]
+            if num_scores <= 3:
+                continue
+            current_triplet_loss = 0.0
+            for triplet_num in range(num_triplets):
+                random_indices = random.sample(range(0, num_scores), 3)
+                # sort the numbers as anchor, positive, negative
+                anchor_rank = current_rankings[random_indices[0]]
+                first_rank = current_rankings[random_indices[1]]
+                second_rank = current_rankings[random_indices[2]]
+                # is first closer than second
+                first_closer_than_second = abs(anchor_rank - first_rank) < abs(anchor_rank - second_rank)
+                if not first_closer_than_second:
+                    # swap indices
+                    temp = random_indices[1]
+                    random_indices[1] = random_indices[2]
+                    random_indices[2] = temp
+                # evaluate the triplet
+                anchor_score = current_scores[random_indices[0]].unsqueeze(0)
+                left_score = current_scores[random_indices[1]].unsqueeze(0)
+                right_score = current_scores[random_indices[2]].unsqueeze(0)
+                # calculate the triplet margin loss of the scores
+                triplet_loss = self.triplet_loss(anchor_score, left_score, right_score)
+                current_triplet_loss +=  triplet_loss
+
+            total_triplet_loss += current_triplet_loss / num_triplets
+
+        return total_triplet_loss
+
+    def compute_neural_ndcg_loss(self, sentence_scores, rankings, sentence_batch, batch, num_sentences):
+        batch_size = sentence_batch.max() + 1
+        slate_size = 200 # max num sentences
+        # reshape the inputs
+        stacked_scores = []
+        stacked_rankings = []
+        for index in range(batch_size):
+            # sentence_scores should be [batch_size, slate_size]
+            # rankings should be [batch_size, slate_size] 
+            current_scores = sentence_scores[torch.nonzero(sentence_batch == index)]
+            current_rankings = rankings[torch.nonzero(sentence_batch == index)]
+            # pad the scores and rankings with -1 to have the desired size
+            if current_scores.shape[0] == 1:
+                continue
+            current_scores = current_scores.squeeze()
+            current_scores_shape = current_scores.shape[0]
+            current_scores = F.pad(input=current_scores, pad=(0, slate_size - current_scores_shape), mode='constant', value=-1)
+            stacked_scores.append(current_scores)
+            current_rankings = current_rankings.squeeze()
+            current_rankings_shape = current_rankings.shape[0]
+            current_rankings = F.pad(input=current_rankings, pad=(0, slate_size - current_rankings_shape), mode='constant', value=-1)
+            stacked_rankings.append(current_rankings.squeeze())
+        stacked_scores = torch.stack(stacked_scores)
+        stacked_rankings = torch.stack(stacked_rankings)
+        assert stacked_scores.shape == stacked_rankings.shape
+        # calculate loss
+        loss = -1 * neuralNDCG(stacked_scores, stacked_rankings, padded_value_indicator=-1)
+        return loss 
 
     """
         def forward(self, input_graph, num_output_sentences=3):
@@ -376,18 +536,21 @@ class GraphUNetCoarsening(torch.nn.Module):
     """
         Performs forward pass 
     """
-    def forward(self, data, num_output_sentences=3, batch=None):
+    def forward(self, data, num_output_sentences=3, batch=None, mode="supervised"):
         if batch is None:
             batch = data.batch
         original_batch = batch.clone()
         # unpack the data
         x, y, edge_index, edge_attr, num_sentences = data.x, data.y, data.edge_index, data.edge_attr, data.num_sentences
+        rankings = data.rankings
         # convert edge_attr to edge_weight
         edge_weight = edge_attr.squeeze().float()
         edge_index = edge_index.long()
         x = x.float()
         # save a copy of the input x
         original_x = x.clone()
+        # do input embedding function
+        x = self.embedding_function(x)
         # perform first layer down convolution 
         x = self.down_convs[0](x, edge_index)
         x = self.activation(x)
@@ -397,6 +560,7 @@ class GraphUNetCoarsening(torch.nn.Module):
         perms = []
         last_batch = None
         # perform downward pooling and convolutions
+    
         for i in range(1, self.depth + 1):
             edge_index, edge_weight = self.augment_adj(edge_index, edge_weight,
                                                        x.size(0))
@@ -434,16 +598,24 @@ class GraphUNetCoarsening(torch.nn.Module):
 
             x = self.up_convs[i](x, edge_index)
             x = self.activation(x) if i < self.depth - 1 else x
-        # perform GCN to map the output graph wiht zero embeddings 
-        # to an attempted reconstruction of the input graph
-        
+        # output embedding
+        x = self.inverse_embedding_function(x)
         # compute the loss
         reconstructed_x = x
         supervised_loss = self.compute_supervised_loss(data, sentence_scores, sentence_batch)
         unsupervised_loss = self.compute_unsupervised_loss(original_x, reconstructed_x, num_sentences=num_sentences, batch=original_batch)
-        if self.supervised:
+        triplet_loss = self.compute_triplet_loss(sentence_scores, rankings, sentence_batch, batch, num_sentences)
+        if mode == "supervised":
             loss = supervised_loss
-        else:
+        elif mode == "triplet":
+            loss = triplet_loss
+        elif mode == "unsupervised":
             loss = unsupervised_loss
+        # make a loss dictionary
+        loss_dict = {
+            "supervised_loss": supervised_loss,
+            "unsupervised_loss": unsupervised_loss,
+            "triplet_loss": triplet_loss, 
+        }
 
-        return supervised_loss, unsupervised_loss, loss, coarsened_indices
+        return loss_dict, loss, coarsened_indices

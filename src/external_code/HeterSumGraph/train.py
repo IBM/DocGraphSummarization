@@ -28,6 +28,7 @@ import dgl
 import numpy as np
 import torch
 from rouge import Rouge
+import wandb
 
 from HiGraph import HSumGraph, HSumDocGraph
 from Tester import SLTester
@@ -35,6 +36,11 @@ from module.dataloader import ExampleSet, MultiExampleSet, graph_collate_fn
 from module.embedding import Word_Embedding
 from module.vocabulary import Vocab
 from tools.logger import *
+import sys
+import os
+sys.path.append(os.environ["GRAPH_SUM"])
+sys.path.append(os.environ["GRAPH_SUM"]+"/src/external_code/allRank")
+import src.external_code.allRank.allrank.models.losses.neuralNDCG as neuralNDCG
 
 _DEBUG_FLAG_ = False
 
@@ -45,7 +51,7 @@ def save_model(model, save_file):
     logger.info('[INFO] Saving model to %s', save_file)
 
 
-def setup_training(model, train_loader, valid_loader, valset, hps):
+def setup_training(model, train_loader, valid_loader, valset, hps, loss_type):
     """ Does setup before starting training (run_training)
     
         :param model: the model
@@ -68,13 +74,101 @@ def setup_training(model, train_loader, valid_loader, valset, hps):
         os.makedirs(train_dir)
 
     try:
-        run_training(model, train_loader, valid_loader, valset, hps, train_dir)
+        run_training(model, train_loader, valid_loader, valset, hps, train_dir, loss_type)
     except KeyboardInterrupt:
         logger.error("[Error] Caught keyboard interrupt on worker. Stopping supervisor...")
         save_model(model, os.path.join(train_dir, "earlystop"))
+##############3
+        G = dgl.DGLGraph()
+        wid2nid, nid2wid = self.AddWordNode(G, input_pad)
+        w_nodes = len(nid2wid)
 
+        N = len(input_pad)
+        G.add_nodes(N)
+        G.ndata["unit"][w_nodes:] = torch.ones(N)
+        G.ndata["dtype"][w_nodes:] = torch.ones(N)
+        sentid2nid = [i + w_nodes for i in range(N)]
 
-def run_training(model, train_loader, valid_loader, valset, hps, train_dir):
+        G.set_e_initializer(dgl.init.zero_initializer)
+        for i in range(N):
+            c = Counter(input_pad[i])
+            sent_nid = sentid2nid[i]
+            sent_tfw = w2s_w[str(i)]
+            for wid in c.keys():
+                if wid in wid2nid.keys() and self.vocab.id2word(wid) in sent_tfw.keys():
+                    tfidf = sent_tfw[self.vocab.id2word(wid)]
+                    tfidf_box = np.round(tfidf * 9)  # box = 10
+                    G.add_edges(wid2nid[wid], sent_nid,
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+                    G.add_edges(sent_nid, wid2nid[wid],
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+            
+            # The two lines can be commented out if you use the code for your own training, since HSG does not use sent2sent edges. 
+            # However, if you want to use the released checkpoint directly, please leave them here.
+            # Otherwise it may cause some parameter corresponding errors due to the version differences.
+            #G.add_edges(sent_nid, sentid2nid, data={"dtype": torch.ones(N)})
+            #G.add_edges(sentid2nid, sent_nid, data={"dtype": torch.ones(N)})
+        G.nodes[sentid2nid].data["words"] = torch.LongTensor(input_pad)  # [N, seq_len]
+        G.nodes[sentid2nid].data["position"] = torch.arange(1, N + 1).view(-1, 1).long()  # [N, 1]
+        G.nodes[sentid2nid].data["label"] = torch.LongTensor(label)  # [N, doc_max]
+        ranking = torch.LongTensor(ranking)
+        # filter values over 50
+        #print("filtered shape")
+        ranking = ranking[torch.nonzero(ranking < 50)].squeeze()
+        #print(ranking.shape)
+        #ranking_pad = torch.nn.functional.pad(ranking, (0, self.doc_max_timesteps - ranking.shape[0]))
+        #print("padded shape")
+        #print(ranking_pad.shape)
+        if len(ranking.shape) == 0:
+            G.nodes[sentid2nid].data["ranking"] = torch.arange(0, N).unsqueeze(1)
+        else:
+            G.nodes[sentid2nid].data["ranking"] = ranking.unsqueeze(1)
+
+        return G
+
+def ranking_loss(outputs, G):
+    def compute_neural_ndcg_loss(sentence_scores, rankings):
+        print(sentence_scores.shape)
+        print(rankings.shape)
+        batch_num_nodes = G.batch_num_nodes()
+        print(batch_num_nodes)
+        batch_size = sentence_batch.max() + 1
+        slate_size = 200 # max num sentences
+        # reshape the inputs
+        stacked_scores = []
+        stacked_rankings = []
+        for index in range(batch_size):
+            # sentence_scores should be [batch_size, slate_size]
+            current_scores = sentence_scores[torch.nonzero(sentence_batch == index)]
+            # rankings should be [batch_size, slate_size] 
+            current_rankings = rankings[torch.nonzero(sentence_batch == index)]
+            # pad the scores and rankings with -1 to have the desired size
+            if current_scores.shape[0] == 1:
+                continue
+            current_scores = current_scores.squeeze()
+            current_scores_shape = current_scores.shape[0]
+            current_scores = F.pad(input=current_scores, pad=(0, slate_size - current_scores_shape), mode='constant', value=-1)
+            stacked_scores.append(current_scores)
+            current_rankings = current_rankings.squeeze()
+            current_rankings_shape = current_rankings.shape[0]
+            current_rankings = F.pad(input=current_rankings, pad=(0, slate_size - current_rankings_shape), mode='constant', value=-1)
+            stacked_rankings.append(current_rankings.squeeze())
+        stacked_scores = torch.stack(stacked_scores)
+        stacked_rankings = torch.stack(stacked_rankings)
+        assert stacked_scores.shape == stacked_rankings.shape
+        # calculate loss
+        loss = -1 * neuralNDCG(stacked_scores, stacked_rankings, padded_value_indicator=-1)
+        return loss 
+    
+    snode_id = G.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)
+    sentence_scores  = G.ndata["label"][snode_id].sum(-1)  # [n_nodes]
+    ranking = G.ndata["ranking"]
+    batch_size = G.batch_size
+    print(batch_size)
+
+    return compute_neural_ndcg_loss(outputs, ranking)
+
+def run_training(model, train_loader, valid_loader, valset, hps, train_dir, loss_type="not ranking"):
     '''  Repeatedly runs training iterations, logging loss to screen and log files
     
         :param model: the model
@@ -86,11 +180,11 @@ def run_training(model, train_loader, valid_loader, valset, hps, train_dir):
         :return: 
     '''
     logger.info("[INFO] Starting run_training")
-
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=hps.lr)
-
-
-    criterion = torch.nn.CrossEntropyLoss(reduction='none')
+    if loss_type == "not ranking":
+        criterion = torch.nn.CrossEntropyLoss(reduction='none')
+    else:
+        criterion = ranking_loss
 
     best_train_loss = None
     best_loss = None
@@ -109,12 +203,14 @@ def run_training(model, train_loader, valid_loader, valset, hps, train_dir):
             model.train()
 
             if hps.cuda:
-                G.to(torch.device("cuda"))
-
+                G = G.to(torch.device("cuda"))
             outputs = model.forward(G)  # [n_snodes, 2]
             snode_id = G.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)
             label = G.ndata["label"][snode_id].sum(-1)  # [n_nodes]
-            G.nodes[snode_id].data["loss"] = criterion(outputs, label).unsqueeze(-1)  # [n_nodes, 1]
+            if loss_type == "not ranking":
+                G.nodes[snode_id].data["loss"] = criterion(outputs, label).unsqueeze(-1)  # [n_nodes, 1]
+            else:
+                G.nodes[snode_id].data["loss"] = criterion(outputs, G).unsqueeze(-1)  # [n_nodes, 1]
             loss = dgl.sum_nodes(G, "loss")  # [batch_size, 1]
             loss = loss.mean()
 
@@ -146,7 +242,6 @@ def run_training(model, train_loader, valid_loader, valset, hps, train_dir):
                 logger.info('       | end of iter {:3d} | time: {:5.2f}s | train loss {:5.4f} | '
                                 .format(i, (time.time() - iter_start_time),float(train_loss / 100)))
                 train_loss = 0.0
-
         if hps.lr_descent:
             new_lr = max(5e-6, hps.lr / (epoch + 1))
             for param_group in list(optimizer.param_groups):
@@ -168,15 +263,14 @@ def run_training(model, train_loader, valid_loader, valset, hps, train_dir):
             save_model(model, os.path.join(train_dir, "earlystop"))
             sys.exit(1)
 
-        best_loss, best_F, non_descent_cnt, saveNo = run_eval(model, valid_loader, valset, hps, best_loss, best_F, non_descent_cnt, saveNo)
+        best_loss, best_F, non_descent_cnt, saveNo = run_eval(model, valid_loader, valset, hps, best_loss, best_F, non_descent_cnt, saveNo, loss_type)
 
         if non_descent_cnt >= 3:
             logger.error("[Error] val loss does not descent for three times. Stopping supervisor...")
             save_model(model, os.path.join(train_dir, "earlystop"))
             return
 
-
-def run_eval(model, loader, valset, hps, best_loss, best_F, non_descent_cnt, saveNo):
+def run_eval(model, loader, valset, hps, best_loss, best_F, non_descent_cnt, saveNo, loss_type):
     ''' 
         Repeatedly runs eval iterations, logging to screen and writing summaries. Saves the model with the best loss seen so far.
         :param model: the model
@@ -198,10 +292,10 @@ def run_eval(model, loader, valset, hps, best_loss, best_F, non_descent_cnt, sav
     iter_start_time = time.time()
 
     with torch.no_grad():
-        tester = SLTester(model, hps.m)
+        tester = SLTester(model, hps.m, loss_type=loss_type)
         for i, (G, index) in enumerate(loader):
             if hps.cuda:
-                G.to(torch.device("cuda"))
+                G = G.to(torch.device("cuda"))
             tester.evaluation(G, index, valset)
 
     running_avg_loss = tester.running_avg_loss
@@ -220,7 +314,13 @@ def run_eval(model, loader, valset, hps, best_loss, best_F, non_descent_cnt, sav
           + "Rougel:\n\tp:%.6f, r:%.6f, f:%.6f\n" % (
     scores_all['rouge-l']['p'], scores_all['rouge-l']['r'], scores_all['rouge-l']['f'])
     logger.info(res)
-
+    """
+    wandb.log(
+        {
+            "
+        }
+    )
+    """
     tester.getMetric()
     F = tester.labelMetric
 
@@ -259,28 +359,23 @@ def run_eval(model, loader, valset, hps, best_loss, best_F, non_descent_cnt, sav
 
 def main():
     parser = argparse.ArgumentParser(description='HeterSumGraph Model')
-
     # Where to find data
     parser.add_argument('--data_dir', type=str, default='data/CNNDM',help='The dataset directory.')
     parser.add_argument('--cache_dir', type=str, default='cache/CNNDM',help='The processed dataset directory')
     parser.add_argument('--embedding_path', type=str, default='/remote-home/dqwang/Glove/glove.42B.300d.txt', help='Path expression to external word embedding.')
-
     # Important settings
     parser.add_argument('--model', type=str, default='HSG', help='model structure[HSG|HDSG]')
     parser.add_argument('--restore_model', type=str, default='None', help='Restore model for further training. [bestmodel/bestFmodel/earlystop/None]')
-
     # Where to save output
     parser.add_argument('--save_root', type=str, default='save/', help='Root directory for all model.')
     parser.add_argument('--log_root', type=str, default='log/', help='Root directory for all logging.')
-
     # Hyperparameters
     parser.add_argument('--gpu', type=str, default='0', help='GPU ID to use. [default: 0]')
-    parser.add_argument('--cuda', action='store_true', default=False, help='GPU or CPU [default: False]')
+    parser.add_argument('--cuda', action='store_true', default=True, help='GPU or CPU [default: False]')
     parser.add_argument('--vocab_size', type=int, default=50000,help='Size of vocabulary. [default: 50000]')
     parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs [default: 20]')
-    parser.add_argument('--batch_size', type=int, default=32, help='Mini batch size [default: 32]')
+    parser.add_argument('--batch_size', type=int, default=256, help='Mini batch size [default: 32]')
     parser.add_argument('--n_iter', type=int, default=1, help='iteration hop [default: 1]')
-
     parser.add_argument('--word_embedding', action='store_true', default=True, help='whether to use Word embedding [default: True]')
     parser.add_argument('--word_emb_dim', type=int, default=300, help='Word embedding size [default: 300]')
     parser.add_argument('--embed_train', action='store_true', default=False,help='whether to train Word embedding [default: False]')
@@ -305,10 +400,13 @@ def main():
     parser.add_argument('--lr_descent', action='store_true', default=False, help='learning rate descent')
     parser.add_argument('--grad_clip', action='store_true', default=False, help='for gradient clipping')
     parser.add_argument('--max_grad_norm', type=float, default=1.0, help='for gradient clipping max gradient normalization')
-
     parser.add_argument('-m', type=int, default=3, help='decode summary length')
+    parser.add_argument('--loss_type', type=str, default="ranking", help='Loss type')
 
     args = parser.parse_args()
+
+    # start wandb
+    wandb.init()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     torch.set_printoptions(threshold=50000)
@@ -319,7 +417,6 @@ def main():
     VOCAL_FILE = os.path.join(args.cache_dir, "vocab")
     FILTER_WORD = os.path.join(args.cache_dir, "filter_word.txt")
     LOG_PATH = args.log_root
-
 
     # train_log setting
     if not os.path.exists(LOG_PATH):
@@ -350,7 +447,7 @@ def main():
     if hps.model == "HSG":
         model = HSumGraph(hps, embed)
         logger.info("[MODEL] HeterSumGraph ")
-        dataset = (DATA_FILE, vocab, hps.doc_max_timesteps, hps.sent_max_len, FILTER_WORD, train_w2s_path)
+        dataset = ExampleSet(DATA_FILE, vocab, hps.doc_max_timesteps, hps.sent_max_len, FILTER_WORD, train_w2s_path)
         train_loader = torch.utils.data.DataLoader(dataset, batch_size=hps.batch_size, shuffle=True, num_workers=32,collate_fn=graph_collate_fn)
         del dataset
         valid_dataset = ExampleSet(VALID_FILE, vocab, hps.doc_max_timesteps, hps.sent_max_len, FILTER_WORD, val_w2s_path)
@@ -369,13 +466,11 @@ def main():
         logger.error("[ERROR] Invalid Model Type!")
         raise NotImplementedError("Model Type has not been implemented")
 
-
     if args.cuda:
-        model.to(torch.device("cuda:0"))
+        model = model.to(torch.device("cuda"))
         logger.info("[INFO] Use cuda")
 
-    setup_training(model, train_loader, valid_loader, valid_dataset, hps)
-
+    setup_training(model, train_loader, valid_loader, valid_dataset, hps, args.loss_type)
 
 if __name__ == '__main__':
     main()

@@ -1,7 +1,6 @@
 import os
 import argparse
 import json
-
 from sklearn.preprocessing import normalize
 from sklearn.feature_extraction.text import CountVectorizer,TfidfTransformer
 

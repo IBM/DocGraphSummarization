@@ -56,7 +56,7 @@ FILTERWORD.extend(punctuations)
 class Example(object):
     """Class representing a train/val/test example for single-document extractive summarization."""
 
-    def __init__(self, article_sents, abstract_sents, vocab, sent_max_len, label):
+    def __init__(self, article_sents, abstract_sents, vocab, sent_max_len, label, ranking):
         """ Initializes the Example, performing tokenization and truncation to produce the encoder, decoder and target sequences, which are stored in self.
 
         :param article_sents: list(strings) for single document or list(list(string)) for multi-document; one per article sentence. each token is separated by a single space.
@@ -93,6 +93,8 @@ class Example(object):
         self.label_matrix = np.zeros(label_shape, dtype=int)
         if label != []:
             self.label_matrix[np.array(label), np.arange(len(label))] = 1  # label_matrix[i][j]=1 indicate the i-th sent will be selected in j-th step
+        # save the rankings
+        self.ranking = ranking
 
     def _pad_encoder_input(self, pad_id):
         """
@@ -187,7 +189,7 @@ class ExampleSet(torch.utils.data.Dataset):
     def get_example(self, index):
         e = self.example_list[index]
         e["summary"] = e.setdefault("summary", [])
-        example = Example(e["text"], e["summary"], self.vocab, self.sent_max_len, e["label"])
+        example = Example(e["text"], e["summary"], self.vocab, self.sent_max_len, e["label"], e["average_rankings"])
         return example
 
     def pad_label_m(self, label_matrix):
@@ -219,7 +221,7 @@ class ExampleSet(torch.utils.data.Dataset):
 
         return wid2nid, nid2wid
 
-    def CreateGraph(self, input_pad, label, w2s_w):
+    def CreateGraph(self, input_pad, label, w2s_w, ranking):
         """ Create a graph for each document
         
         :param input_pad: list(list); [sentnum, wordnum]
@@ -259,11 +261,23 @@ class ExampleSet(torch.utils.data.Dataset):
             # The two lines can be commented out if you use the code for your own training, since HSG does not use sent2sent edges. 
             # However, if you want to use the released checkpoint directly, please leave them here.
             # Otherwise it may cause some parameter corresponding errors due to the version differences.
-            G.add_edges(sent_nid, sentid2nid, data={"dtype": torch.ones(N)})
-            G.add_edges(sentid2nid, sent_nid, data={"dtype": torch.ones(N)})
+            #G.add_edges(sent_nid, sentid2nid, data={"dtype": torch.ones(N)})
+            #G.add_edges(sentid2nid, sent_nid, data={"dtype": torch.ones(N)})
         G.nodes[sentid2nid].data["words"] = torch.LongTensor(input_pad)  # [N, seq_len]
         G.nodes[sentid2nid].data["position"] = torch.arange(1, N + 1).view(-1, 1).long()  # [N, 1]
         G.nodes[sentid2nid].data["label"] = torch.LongTensor(label)  # [N, doc_max]
+        ranking = torch.LongTensor(ranking)
+        # filter values over 50
+        #print("filtered shape")
+        ranking = ranking[torch.nonzero(ranking < 50)].squeeze()
+        #print(ranking.shape)
+        #ranking_pad = torch.nn.functional.pad(ranking, (0, self.doc_max_timesteps - ranking.shape[0]))
+        #print("padded shape")
+        #print(ranking_pad.shape)
+        if len(ranking.shape) == 0:
+            G.nodes[sentid2nid].data["ranking"] = torch.arange(0, N).unsqueeze(1)
+        else:
+            G.nodes[sentid2nid].data["ranking"] = ranking.unsqueeze(1)
 
         return G
 
@@ -277,8 +291,9 @@ class ExampleSet(torch.utils.data.Dataset):
         item = self.get_example(index)
         input_pad = item.enc_sent_input_pad[:self.doc_max_timesteps]
         label = self.pad_label_m(item.label_matrix)
+        ranking = item.ranking
         w2s_w = self.w2s_tfidf[index]
-        G = self.CreateGraph(input_pad, label, w2s_w)
+        G = self.CreateGraph(input_pad, label, w2s_w, ranking)
 
         return G, index
 

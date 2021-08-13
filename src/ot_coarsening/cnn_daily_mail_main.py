@@ -3,11 +3,11 @@ import wandb
 import sys
 sys.path.append(os.environ["GRAPH_SUM"])
 from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
-from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
+from src.ot_coarsening.dataset_management.cnndm.graph_constructor import CNNDailyMailGraphConstructor
 from src.ot_coarsening.ot_coarsening import Coarsening
 from src.ot_coarsening.u_net import GraphUNetCoarsening
 from src.ot_coarsening.ot_coarsening_dense import Coarsening as DenseCoarsening
-import src.ot_coarsening.evaluation as evaluation
+import src.ot_coarsening.evaluation.rouge_evaluation as rouge_evaluation
 import torch
 import torch.nn.functional as F
 import time
@@ -122,7 +122,7 @@ def train(model, train_dataset, validation_dataset, save_dir="$GRAPH_SUM/src/ot_
         
 
 def rouge_validation(model, dataset):
-    rouge_evaluations = evaluation.perform_rouge_evaluations(model, dataset, dense=args.dense)
+    rouge_evaluations = rouge_evaluation.perform_rouge_evaluations(model, dataset, dense=args.dense)
 
 def init_model(dataset, model_type="ot_coarsening", dense=False):
     num_layers = 1

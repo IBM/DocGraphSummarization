@@ -3,11 +3,11 @@ import wandb
 import sys
 sys.path.append(os.environ["GRAPH_SUM"])
 from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
-from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
+from src.ot_coarsening.dataset_management.cnndm.graph_constructor import CNNDailyMailGraphConstructor
 from src.ot_coarsening.ot_coarsening import MultiLayerCoarsening, Coarsening
 from src.ot_coarsening.u_net import GraphUNetCoarsening
 from src.ot_coarsening.ot_coarsening_dense import Coarsening as DenseCoarsening
-import src.ot_coarsening.evaluation as evaluation
+import src.ot_coarsening.evaluation.rouge_evaluation as rouge_evaluation
 import torch
 import torch.nn.functional as F
 import time
@@ -25,7 +25,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 parser = argparse.ArgumentParser()
 parser.add_argument('--unsupervised_epochs', type=int, default=20)
 parser.add_argument('--supervised_epochs', type=int, default=0)
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--lr_decay_factor', type=float, default=0.9)
 parser.add_argument('--lr_decay_step_size', type=int, default=50)
@@ -36,7 +36,7 @@ parser.add_argument('--train', action='store_true')
 parser.add_argument('--num_output_sentences', type=int, default=3)
 parser.add_argument('--dense', type=bool, default=False)
 parser.add_argument('--no_extra_mlp', action='store_true')
-parser.add_argument('--similarity', type=bool, default=True)
+parser.add_argument('--similarity', type=bool, default=False)
 
 args = parser.parse_args()
 
@@ -75,6 +75,7 @@ def train_iteration(model, optimizer, loader, mode="unsupervised"):
     supervised_loss = 0
     unsupervised_loss = 0
     for graph_index, example_graph in enumerate(tqdm(loader)):
+        print(example_graph)
         example_graph.to(device)
         optimizer.zero_grad()
         supervised_loss, unsupervised_loss, loss, coarse_indices = model(example_graph, num_output_sentences=args.num_output_sentences)
@@ -139,7 +140,7 @@ def train(model, unsupervised_train_dataset, supervised_train_dataset, validatio
         torch.save(model, model_path)
         
 def rouge_validation(model, dataset):
-    rouge_evaluations = evaluation.perform_rouge_evaluations(model, dataset, dense=args.dense)
+    rouge_evaluations = rouge_evaluation.perform_rouge_evaluations(model, dataset, dense=args.dense)
 
 def init_model(dataset, model_type="ot_coarsening", dense=False):
     num_layers = 1
@@ -173,9 +174,9 @@ def main():
     model_type = "u_net"
     # Setup CNNDailyMail data
     graph_constructor = CNNDailyMailGraphConstructor(similarity=args.similarity)
-    supervised_train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=(0.0, 0.5), dense=args.dense)
-    unsupervised_train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=(0.5, 1.0), dense=args.dense)
-    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=(0.0, 1.0), dense=args.dense)
+    supervised_train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=(0.0, 0.5), dense=args.dense, highlights=True)
+    unsupervised_train_dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=False, proportion_of_dataset=(0.5, 1.0), dense=args.dense, highlights=True)
+    validation_dataset = CNNDailyMail(graph_constructor=graph_constructor, mode="val", perform_processing=False, proportion_of_dataset=(0.0, 1.0), dense=args.dense, highlights=True)
     # Initialize the model
     model = init_model(unsupervised_train_dataset, dense=args.dense, model_type=model_type)
     # Run training

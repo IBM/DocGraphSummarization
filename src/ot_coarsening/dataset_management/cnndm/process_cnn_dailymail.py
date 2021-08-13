@@ -3,7 +3,7 @@ import sys
 sys.path.append(os.environ["GRAPH_SUM"])
 # from src.dataset_management.datasets import get_dataset
 from src.ot_coarsening.dataset_management.cnndm.cnn_daily_mail import CNNDailyMail
-from src.ot_coarsening.dataset_management.graph_constructor import CNNDailyMailGraphConstructor
+from src.ot_coarsening.dataset_management.cnndm.graph_constructor import CNNDailyMailGraphConstructor
 import torch
 import torch.nn.functional as F
 import time
@@ -21,14 +21,14 @@ device = torch.device('cuda') #torch.device('cuda' if torch.cuda.is_available() 
 """
 def main():
     # Make graph constructor
-    graph_constructor = CNNDailyMailGraphConstructor(similarity=True)
+    graph_constructor = CNNDailyMailGraphConstructor(similarity=False, prepend_ordering=True)
     # Setup CNNDailyMail data
     mode = "train"
-    proportion_of_dataset = 0.1
-    #dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=(0, proportion_of_dataset))
+    proportion_of_dataset = 1.0
+    dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=(0, proportion_of_dataset), highlights=True, overwrite_existing=False)
     mode = "val"
-    proportion_of_dataset = 0.1
-    dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=(0, proportion_of_dataset))
+    proportion_of_dataset = 1.0
+    #dataset = CNNDailyMail(graph_constructor=graph_constructor, perform_processing=True, mode=mode, proportion_of_dataset=(0, proportion_of_dataset), highlights=True, overwrite_existing=False)
 
 if __name__ == "__main__":
     main()

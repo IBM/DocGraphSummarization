@@ -6,7 +6,6 @@ import numpy as np
 from torch.nn import Linear
 from torch_geometric.nn import DenseSAGEConv, DenseGCNConv, JumpingKnowledge
 from sinkhorn import sinkhorn_loss_default
-from pytorch_memlab import profile, set_target_gpu, profile_every
 
 class CoarsenBlock(torch.nn.Module):
     def __init__(self, in_channels, assign_ratio):
